@@ -1,6 +1,8 @@
 use serde::{Serialize, Deserialize};
 use chrono::prelude::*;
 use openssl::{sha::sha256, base64};
+use std::fs::File;
+use std::io::{self, BufRead};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Record {
@@ -65,4 +67,22 @@ impl Block {
         let hash_bytes = sha256(&data.to_string().as_bytes());
         base64::encode_block(hash_bytes.as_ref())
     }
+
+    pub fn load_block_from_file(block_idx: usize, file_name: &str) -> Result<Block, Box<dyn std::error::Error>> {
+        // TODO: we assume that the file is not corrupted and that, for simplicity, every
+        // block is on separate line. So to get ith block we simply read the ith line.
+        let file = File::open(file_name)?;
+        let reader = io::BufReader::new(file);
+
+        // Read the file until reaching the desired element index
+        for (i, line) in reader.lines().enumerate() {
+            if i == block_idx - 1 {
+                return Ok(serde_json::from_str(&line?)?);
+            }
+        }
+
+        Err("Error while reading the file".into())
+    }
 }
+
+

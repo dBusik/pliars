@@ -1,8 +1,10 @@
 use crate::blockchain::block::Block;
 use openssl::{sha::sha256, base64};
 use rand::Rng;
-use serde::{Serialize, Deserialize};
-use std::fs::File;
+use serde::{Serialize, Deserialize, Serializer};
+use serde::ser::SerializeSeq;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write, BufRead};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Chain {
@@ -17,6 +19,7 @@ pub struct Chain {
     pub num_side_links: usize,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum ChainType {
     Local,
     Remote,
@@ -32,18 +35,83 @@ impl Chain {
         }
     }
 
-    pub fn load_from_file(file_name: &str) -> Chain {
-        let file = std::fs::File::open(file_name).expect("Unable to open the file");
+    pub fn load_from_file(file_name: &str) -> Result<Chain, Box<dyn std::error::Error>> {
+        let file = std::fs::File::open(file_name)?;
         let reader = std::io::BufReader::new(file);
-        serde_json::from_reader(reader).expect("Unable to parse the file")
+        let mut blocks = Vec::new();
+        for line in reader.lines() {
+            let block = serde_json::from_str(&line?)?;
+            blocks.push(block);
+        }
+        Ok(Chain {
+            blocks,
+            // TODO: determine how to store difficulty and num_side_links in the file
+            difficulty: 0.0,
+            num_side_links: 0,
+        })
     }
 
-    pub fn save_to_file(&self, file_name: &str) {
-        let file = File::create(file_name).expect("Unable to create the file");
-        let writer = std::io::BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &self).expect("Unable to write to the file");
+    pub fn save_blockchain_to_file(&self, file_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = File::create(file_name)?;
+        // Each block should be serialized on a separate line
+        let mut blockchian_string = Vec::new();
+        for block in &self.blocks {
+            let block_string = serde_json::to_string(block)?;
+            // Push a string with a newline character
+            blockchian_string.push(format!("{}\n", block_string));
+        }
+        file.write_all(blockchian_string.join("").as_bytes())?;
+
+        Ok(())
+        
+        // Alternative way of serializing the blockchain - everything in one line
+        // let mut serializer = serde_json::Serializer::new(&file);
+        // let mut seq = serializer
+        //     .serialize_seq(Some(self.blocks.len())).expect("can serialize sequence");
+        // for block in &self.blocks {
+        //     seq.serialize_element(block).expect("can serialize element");
+        // }
+        // seq.end().expect("can end serialization");
+        // file.flush().expect("can flush writer");
     }
 
+    pub fn get_blockchain_length(file_name: &str) -> usize {
+        // TODO: we assume that the file is not corrupted and that, for simplicity, every
+        // block is on separate line. So to get ith block we simply read the ith line.
+        let file = File::open(file_name).expect("Unable to open the file");
+        let length_reader = io::BufReader::new(file);
+        length_reader.lines().count()
+    }
+
+    pub fn get_last_block(file_name: &str) -> Option<Block> {
+        let blockchain_length = Chain::get_blockchain_length(file_name);
+        let mut last_block = None;
+
+        if blockchain_length > 0 {
+            last_block = Some(Block::load_block_from_file(blockchain_length - 1, file_name)
+                .expect("can load block"));
+        }
+
+        last_block
+    }
+
+    pub fn append_block_to_file(&self,
+        file_name: &str,
+        block: &Block
+    ) -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(file_name)
+            .expect("Unable to open the file");
+
+        let block_string = serde_json::to_string(block)?;
+        file.write_all(format!("{}\n", block_string).as_bytes())?;
+
+        Ok(())
+    }
+    
     pub fn init_first_block(&mut self) {
         self.blocks.push(Block::genesis());
     }
@@ -74,7 +142,7 @@ impl Chain {
         hashes
     }
 
-    pub fn choose_longest_chain(&mut self, remote_chain: &Chain) {
+    pub fn choose_longest_chain(&mut self, remote_chain: &Chain) -> ChainType {
         println!("Choosing the longest chain...");
         let chain_type = self.find_longest_chain(remote_chain);
         match chain_type {
@@ -89,6 +157,8 @@ impl Chain {
                 panic!("No valid chain to choose from.");
             },
         }
+
+        chain_type
     }
 
     fn validate_block(&self, block: &Block) -> bool {
@@ -137,7 +207,7 @@ impl Chain {
         true
     }
 
-    fn validate_chain(&self) -> bool {
+    pub fn validate_chain(&self) -> bool {
         // Check if the chain is empty
         if self.blocks.is_empty() {
             eprintln!("Verification of the chain failed. \

@@ -8,7 +8,10 @@ use std::fs::File;
 use std::io::Write;
 use crate::blockchain::{
     chain::Chain,
+    block::Block
 };
+
+// TODO: remove all .expect and perform proper error handling
 
 /*
     Possible commands:
@@ -77,17 +80,20 @@ pub fn process_cmd(user_input: String,
         },
         Some("listblocks") => {
             println!("listblocks received");
-            let blockchain = Chain::load_from_file(blockchain_file);
-            let blockchain = serde_json::to_string_pretty(&blockchain).expect("can serialize blockchain");
-            match user_input.next() {
-                Some(file_name) => {
-                    println!("Writing blockchain to file {}", file_name);
-                    let mut file = File::create(file_name).expect("can create file");
-                    file.write_all(blockchain.as_bytes()).expect("can write to file");
-                },
-                None => {
-                    println!("{}", blockchain);
+            if let Ok(local_chain) = Chain::load_from_file(blockchain_file) {
+                let blockchain = serde_json::to_string_pretty(&local_chain).expect("can serialize blockchain");
+                match user_input.next() {
+                    Some(file_name) => {
+                        println!("Writing blockchain to file {}", file_name);
+                        let mut file = File::create(file_name).expect("can create file");
+                        file.write_all(blockchain.as_bytes()).expect("can write to file");
+                    },
+                    None => {
+                        println!("{}", blockchain);
+                    }
                 }
+            } else {
+                println!("Cannot load blockchain from file");
             }
         },
         // Some("addrecord") => {
@@ -109,14 +115,17 @@ pub fn process_cmd(user_input: String,
         // },
         Some("printblock") => {
             println!("printblock received");
-            let blockchain = Chain::load_from_file(blockchain_file);
             let block_index = user_input.next().expect("can get block index").parse::<usize>().expect("can parse block index");
-            println!("{:#?}", blockchain.blocks[block_index]);
+            let block = Block::load_block_from_file(
+                block_index,
+                blockchain_file)
+            .expect("can load blockchain");
+            println!("{:#?}", block);
         },
         Some("numberblocks") => {
             println!("numberblocks received");
-            let blockchain = Chain::load_from_file(blockchain_file);
-            println!("Number of blocks: {}", blockchain.blocks.len());
+            let blockchain_length = Chain::get_blockchain_length(blockchain_file);
+            println!("Number of blocks: {}", blockchain_length);
         },
         Some("talk") => {
             println!("talk received");

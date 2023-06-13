@@ -1,14 +1,13 @@
 use crate::blockchain::block;
 use crate::blockchain::{
     block::Block,
-    chain::Chain,
+    chain::{Chain, ChainType}
 };
 use crate::BlockchainBehaviour;
 use crate::utils;
 use crate::network::behaviour::Topics;
 
 use serde::{Serialize, Deserialize};
-use tokio::sync::mpsc::UnboundedSender;
 use libp2p::gossipsub;
 
 pub const DEFAULT_DIFFICULTY_IN_SECONDS: f64 = 10.0;
@@ -94,7 +93,11 @@ impl NetworkEvent {
                 
                 let mut blockchain = Chain::new(difficulty, num_side_links);
                 blockchain.init_first_block();
-                blockchain.save_to_file(blockchain_file);
+                blockchain.add_block(block::Block::genesis());
+
+                if blockchain.save_blockchain_to_file(blockchain_file).is_err() {
+                    println!("Error while saving blockchain to file");
+                }
 
                 println!("Sending Init event with blockchain[difficulty: {difficulty},
                     sidelinks: {num_side_links}]: {:?}", blockchain);
@@ -123,7 +126,7 @@ impl NetworkEvent {
     }
 }
 
-pub fn handle_incoming_event(event_data: &String,
+pub fn handle_incoming_network_event(event_data: &String,
     local_peer_id: &libp2p::PeerId,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>,
     blockchain_file: &str,
@@ -146,12 +149,16 @@ pub fn handle_incoming_event(event_data: &String,
             println!("Received RemoteChainRequest event: {:?}", asked_peer_id);
             if asked_peer_id == local_peer_id.to_string() {
                 println!("Sending local chain to {}", asked_peer_id);
-                let chain = Chain::load_from_file(blockchain_file);
-                let event = NetworkEventInternal::RemoteChainResponse {
-                    remote_chain: chain,
-                    chain_receiver: local_peer_id.to_string(),
+                // Check if chain is ok and ignore if not
+                if let Ok(local_chain) = Chain::load_from_file(blockchain_file) {
+                    let event = NetworkEventInternal::RemoteChainResponse {
+                        remote_chain: local_chain,
+                        chain_receiver: local_peer_id.to_string(),
+                    };
+                    send_network_event(event, swarm);
+                } else {
+                    println!("Chain is not valid. Ignoring RemoteChainRequest event");
                 };
-                send_network_event(event, swarm);
             }
         }
         NetworkEventInternal::RemoteChainResponse { remote_chain, chain_receiver } => {
@@ -160,9 +167,23 @@ pub fn handle_incoming_event(event_data: &String,
                 println!("RemoteChainResponse is meant for {}, which is me", chain_receiver);
                 // Compare the received chain with the local chain and choose the one with
                 // the highest difficulty
-                let mut local_chain = Chain::load_from_file(blockchain_file);
-                local_chain.choose_longest_chain(&remote_chain);
-                local_chain.save_to_file(blockchain_file);
+                if let Ok(mut chain) = Chain::load_from_file(blockchain_file) {
+                    let winner_chain_type = chain.choose_longest_chain(&remote_chain);
+                    if winner_chain_type == ChainType::Remote {
+                        if chain.save_blockchain_to_file(blockchain_file).is_err() {
+                            println!("Error while saving remote chain to file");
+                        }
+                    }
+                } else {
+                    println!("Local chain is not valid. Veryfiyng remote chain and saving it as local chain");
+                    if remote_chain.validate_chain() {
+                        if remote_chain.save_blockchain_to_file(blockchain_file).is_err() {
+                            println!("Error while saving remote chain to file");
+                        }
+                    } else {
+                        println!("Remote chain is not valid. Ignoring RemoteChainResponse event");
+                    }
+                };
             }
         }
         NetworkEventInternal::Message { message, from_peer_id } => {
