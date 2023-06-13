@@ -41,58 +41,20 @@ fn prove_the_work(difficulty: &Vec<u8>, data: &str) -> String{
     nonce.to_string()
 }
 
-// Mining function
-async fn inifinite_pows(pow_tx: mpsc::UnboundedSender<String>,
-    new_initial_data_rx: &mut mpsc::UnboundedReceiver<String>,
-    difficulty: &Vec<u8>,
-    data: &str)
-{
-    let thread_id = thread::current().id();
-    println!("inner miner thread ID: {:?}", thread_id);
-
-    let mut new_external_data = data.to_string();
-    loop {
-        let data = new_external_data.clone();
-        let difficulty = difficulty.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            prove_the_work(&difficulty, &data)
-        }).await.unwrap();
-        // println!("New proof of work: {}", new_pow);
-        tokio::select! {
-            Some(new_data) = new_initial_data_rx.recv() => {
-                // If we mined a block but somebody mined it faster than our previous block is not
-                // valid anymore and we need to mine a new block with new data
-                new_external_data = new_data;
-            }
-            _ = tokio::task::yield_now() => {
-                println!("Sending new proof of work via channel: {}", result);
-                if let Err(e) = pow_tx.send(result) {
-                    eprintln!("error sending new proof of work via channel, {}", e);
-                }
-            }
-        }
-    }
-}
-
 /*
     How this works:
         1. The mining task is spawned and it starts mining a block with the data of the last
             block in the chain.
         2. If a new block is mined, it is sent to the *main* function via the channel.
-        3. If a new block is added to the chain, the mining task is notified and it starts
-            mining a new block with the data of the new last block in the chain. This information
-            is received via new_last_block_rx channel.
-        4. Since mining is an infinite loop, to update it about new data used for mining we
-            send it via new_mining_data_tx channel (i.e. we compute the new data needed to compute
-            the nonce and then send it).
+        3. If a new block is added to the chain, the mining task is notified and after mining the
+            previous block it discards it and starts mining a new block with the data of the new
+            last block in the chain.
  */
 pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>,
     difficulty: &Vec<u8>,
     last_block: Block
 ) {
-    let (pow_tx, mut pow_rx) = mpsc::unbounded_channel();
-    let (mining_data_tx, mut mining_data_rx) = mpsc::unbounded_channel();
     // TODO: this should use sidelinks (i.e. generate random indices of blocks using this hash
     // and then calculate their hashes and concatenate them with this hash and use it as data)
     let main_hash = last_block.hash();
@@ -101,47 +63,37 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     // Mining task, create a copy of the difficulty vector
     let difficulty = difficulty.clone();
 
-    let _ = thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        runtime.block_on(async {
-            let difficulty = difficulty.clone();
-
-            let _ = tokio::spawn(async move {
-                inifinite_pows(pow_tx, &mut mining_data_rx, &difficulty, mining_data.as_str()).await;
-            }).await;
-        });
-    });
-
     let thread_id = thread::current().id();
     println!("outer miner thread ID: {:?}", thread_id);
 
     loop {
+        // TODO: block will be mined regardless of whether it is valid or not (i.e. if last block
+        // has changed while this block was being mined, this block will be mined anyway, it just
+        // won't be sent back to the main function)
+        let new_pow = prove_the_work(&difficulty, &mining_data);
+        // println!("New proof of work: {}", new_pow);
         tokio::select! {
-            Some(new_last_block) = new_last_block_rx.recv() => {
-                // TODO: this should use sidelinks (i.e. generate random indices of blocks using this hash
-                // and then calculate their hashes and concatenate them with this hash and use it as data)
+            Some(new_last_block) =  new_last_block_rx.recv() => {
+                // If we mined a block but somebody mined it faster than our previous block is not
+                // valid anymore and we need to mine a new block with new data
                 mining_data = new_last_block.hash();
-                if let Err(e) = mining_data_tx.send(mining_data.clone()) {
-                    eprintln!("error sending new mining data via channel, {}", e);
-                };
-            },
-            Some(pow) = pow_rx.recv() => {
-                println!("Received New proof of work: {}", pow);
+            }
+            _ = tokio::task::yield_now() => {
+                println!("Sending new block with such proof of work via channel: {}", new_pow);
                 let mined_block = Block::new(last_block.idx + 1,
                     // TODO: second computation of the hash of the last block
                     last_block.hash(),
                     Vec::new(),
-                    pow,
+                    new_pow,
                     Vec::new());
-    
+
                 if let Err(e) = new_mined_block_tx.send(mined_block) {
                     eprintln!("error sending new mined block via channel, {}", e);
                 };
-            },
+            }
+            // _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
+            //     println!("Mining...");
+            // }
         }
     }
 }
