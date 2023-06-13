@@ -57,7 +57,6 @@ async fn inifinite_pows(pow_tx: mpsc::UnboundedSender<String>,
         let result = tokio::task::spawn_blocking(move || {
             prove_the_work(&difficulty, &data)
         }).await.unwrap();
-        println!("Mining done. {}", result);
         // println!("New proof of work: {}", new_pow);
         tokio::select! {
             Some(new_data) = new_initial_data_rx.recv() => {
@@ -98,33 +97,28 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     // and then calculate their hashes and concatenate them with this hash and use it as data)
     let main_hash = last_block.hash();
     let mut mining_data = main_hash.clone();
-    
+
     // Mining task, create a copy of the difficulty vector
     let difficulty = difficulty.clone();
-    
-    let inner_worker_thread = thread::spawn(move || {
+
+    let _ = thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-    
+
         runtime.block_on(async {
             let difficulty = difficulty.clone();
-            
+
             let _ = tokio::spawn(async move {
-                println!("zzz Starting the mining task with difficulty: {:?}", difficulty);
                 inifinite_pows(pow_tx, &mut mining_data_rx, &difficulty, mining_data.as_str()).await;
             }).await;
         });
     });
 
-    // let _ = tokio::spawn(async move {
-    //     inifinite_pows(pow_tx, &mut mining_data_rx, &difficulty, mining_data.as_str()).await;
-    // });
-    
     let thread_id = thread::current().id();
     println!("outer miner thread ID: {:?}", thread_id);
-    
+
     loop {
         tokio::select! {
             Some(new_last_block) = new_last_block_rx.recv() => {
@@ -148,9 +142,6 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
                     eprintln!("error sending new mined block via channel, {}", e);
                 };
             },
-            // _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-            //     println!("Mining...");
-            // }
         }
     }
 }
