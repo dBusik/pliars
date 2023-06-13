@@ -47,21 +47,27 @@ async fn inifinite_pows(pow_tx: mpsc::UnboundedSender<String>,
     difficulty: &Vec<u8>,
     data: &str)
 {
-    let mut data = data.to_string();
     let thread_id = thread::current().id();
     println!("inner miner thread ID: {:?}", thread_id);
+
+    let mut new_external_data = data.to_string();
     loop {
-        let new_pow = prove_the_work(difficulty, &data);
+        let data = new_external_data.clone();
+        let difficulty = difficulty.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            prove_the_work(&difficulty, &data)
+        }).await.unwrap();
+        println!("Mining done. {}", result);
         // println!("New proof of work: {}", new_pow);
         tokio::select! {
             Some(new_data) = new_initial_data_rx.recv() => {
                 // If we mined a block but somebody mined it faster than our previous block is not
                 // valid anymore and we need to mine a new block with new data
-                data = new_data;
+                new_external_data = new_data;
             }
             _ = tokio::task::yield_now() => {
-                println!("Sending new proof of work via channel: {}", new_pow);
-                if let Err(e) = pow_tx.send(new_pow) {
+                println!("Sending new proof of work via channel: {}", result);
+                if let Err(e) = pow_tx.send(result) {
                     eprintln!("error sending new proof of work via channel, {}", e);
                 }
             }
@@ -96,9 +102,25 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     // Mining task, create a copy of the difficulty vector
     let difficulty = difficulty.clone();
     
-    let _ = tokio::spawn(async move {
-        inifinite_pows(pow_tx, &mut mining_data_rx, &difficulty, mining_data.as_str()).await;
+    let inner_worker_thread = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+    
+        runtime.block_on(async {
+            let difficulty = difficulty.clone();
+            
+            let _ = tokio::spawn(async move {
+                println!("zzz Starting the mining task with difficulty: {:?}", difficulty);
+                inifinite_pows(pow_tx, &mut mining_data_rx, &difficulty, mining_data.as_str()).await;
+            }).await;
+        });
     });
+
+    // let _ = tokio::spawn(async move {
+    //     inifinite_pows(pow_tx, &mut mining_data_rx, &difficulty, mining_data.as_str()).await;
+    // });
     
     let thread_id = thread::current().id();
     println!("outer miner thread ID: {:?}", thread_id);
@@ -130,5 +152,5 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
             //     println!("Mining...");
             // }
         }
-    }    
+    }
 }
