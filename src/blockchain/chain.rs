@@ -74,41 +74,6 @@ impl Chain {
         hashes
     }
 
-    /*
-        Proof ow Work
-        A PoWd(data) = b with difficulty d over data is a bit string b s.t.
-            token = H(H(data)||b)
-            token < (2^l)/d (which is equivalent to:) token/2^l < 1/d
-        where H is a cryptographic hash function, e.g. SHA-256, and l is the bit length of token
-        (i.e. the output bit length of your hash function). Select an appropriate bit length of b
-        (consider the probability that no string of this length produces an output satisfying the
-        required property).
-    */
-    pub fn prove_the_work(&self, data: &str) -> String {
-        println!("Proving the work... (mining a block)");
-        // Generate a random initial nonce so that the work of every node would not just be
-        // a race of who can find the lowest nonce the fastest.
-        let mut nonce = rand::thread_rng().gen::<u64>();
-        // let difficulty_value: &[u8] = &(2.0f64.powi(256) / self.difficulty as f64).to_be_bytes();
-        let difficulty_value: &[u8] = &(self.difficulty).to_be_bytes();
-        let mut token: &[u8];
-        loop {
-            let hash_result = sha256(&[data.as_bytes(), &nonce.to_be_bytes()].concat());
-            token = hash_result.as_slice();
-            if token.cmp(difficulty_value) == std::cmp::Ordering::Less {
-                print!("Found a valid nonce: {}. Result token: {:?} < {:?}",
-                    nonce, token, difficulty_value);
-                break;
-            }
-            if nonce % 100000 == 0 {
-                println!("Mining... Current nonce: {}.", nonce);
-            }
-            nonce += 1;
-        }
-
-        nonce.to_string()
-    }
-
     pub fn choose_longest_chain(&mut self, remote_chain: &Chain) {
         println!("Choosing the longest chain...");
         let chain_type = self.find_longest_chain(remote_chain);

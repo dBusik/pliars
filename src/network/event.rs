@@ -125,7 +125,6 @@ impl NetworkEvent {
 
 pub fn handle_incoming_event(event_data: &String,
     local_peer_id: &libp2p::PeerId,
-    internal_ch: &UnboundedSender<InternalResponse>,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>,
     blockchain_file: &str,
 ) {

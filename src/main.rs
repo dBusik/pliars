@@ -7,6 +7,8 @@ use crate::utils::find_my_hashrate;
 use crate::network::event::{InternalResponse, handle_incoming_event};
 use crate::network::behaviour::{BlockchainBehaviour, BlockchainBehaviourEvent, Topics};
 use crate::blockchain_io::{process_cmd, print_cmd_options};
+use crate::blockchain::pow;
+use crate::blockchain::block::Block;
 
 use libp2p::gossipsub::Behaviour;
 use log::info;
@@ -16,6 +18,8 @@ use libp2p::core::{upgrade};
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{SwarmBuilder, SwarmEvent};
 use libp2p::{identity, Transport, noise, tcp, PeerId, yamux, gossipsub, mdns};
+use rug;
+use std::thread;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>>{
@@ -69,22 +73,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     info!("Listening. Network info {:?}", swarm.network_info());
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    let (internal_tx, mut internal_rx) = mpsc::unbounded_channel();
+    // Channels for new mined blocks
+    let (new_mined_block_tx, mut new_mined_block_rx) = mpsc::unbounded_channel();
+    // Channels to inform the miner about new last block of the chain
+    let (new_last_block_tx, mut new_last_block_rx) = mpsc::unbounded_channel();
+    
     // Clear the screen every 10 events
     let mut event_counter = 0;
     print_cmd_options();
+
+    // Spawn the block mining task
+    let network_difficulty_secs: f64 = 6.0;
+    let hashrate: f64 = find_my_hashrate() as f64;
+    let difficulty = (2.0f64.powi(256) - 1.0) / (network_difficulty_secs * hashrate);
+    let difficulty = rug::Float::with_val(256, difficulty);
+    let difficulty = difficulty.trunc().to_integer().unwrap();
+    println!("Difficulty: {:?}", difficulty);
+    let mut difficulty = difficulty.to_digits::<u8>(rug::integer::Order::MsfBe);
+    while difficulty.len() < 32 {
+        difficulty.insert(0, 0);
+    }
+    println!("Starting the mining task with difficulty: {:?}", difficulty);
+    
+    // Dispatch the mine_blocks function
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .worker_threads(6) // Set the number of worker threads
+        .build()
+        .unwrap();
+
+    runtime.spawn(async move {
+        pow::mine_blocks(&new_mined_block_tx, &mut new_last_block_rx, &difficulty, Block::genesis()).await;
+    });
+
+    let thread_id = thread::current().id();
+    println!("main function thread ID: {:?}", thread_id);
+
     loop {
+        println!("Waiting for event...");
         tokio::select! {
             // TODO: create enum and hanlde every case using that enum to avoid huge code chunks
             // executed within select
+            Some(mined_block) = new_mined_block_rx.recv() => {
+                println!("Received mined block: {:?}", mined_block);
+                // let pending_event = BlockchainBehaviourEvent::BlockProposal(mined_block);
+                // let topic = Topics::Block;
+                // if let Err(e) = swarm.behaviour_mut().gossipsub.publish(
+                //     gossipsub::IdentTopic::new(topic.to_string()),
+                //     serde_json::to_vec(&pending_event).expect("can serialize message"))
+                // {
+                //     if let libp2p::gossipsub::PublishError::InsufficientPeers = e {
+                //         println!("No peers to share event with to :(");
+                //     } else {
+                //         panic!("Error while publishing message: {:?}", e);
+                //     }
+                // }
+            }
             cmd_line = stdin.next_line() => {
                 let line = cmd_line.expect("can get line").expect("can read line from stdin");
                 println!("Received user input: {:?}", line);
                 process_cmd(line, &mut swarm, &local_peer_id, blockchain_filepath.as_str());
-            }
-            internal_response = internal_rx.recv() => {
-                let internal_response: InternalResponse = internal_response.expect("can get internal response");
-                println!("Received internal response: {:?}", internal_response);
             }
             network_event = swarm.select_next_some() => match network_event {
                 SwarmEvent::Behaviour(BlockchainBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
@@ -112,7 +160,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     let data = String::from_utf8_lossy(&message.data).to_string();
                     handle_incoming_event(&data,
                         &local_peer_id,
-                        &internal_tx,
                         &mut swarm,
                         blockchain_filepath.as_str());
                 }

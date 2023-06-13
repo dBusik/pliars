@@ -49,4 +49,8 @@ mod tests {
         // Call the exorcist if this assert fails
         assert!(cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal || cmp == std::cmp::Ordering::Greater);
     }
+
+    #[test]
+    fn test_binary_representation() {
+    }
 }
