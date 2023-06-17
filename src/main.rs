@@ -4,11 +4,9 @@ mod network;
 mod blockchain_io;
 
 use crate::utils::find_my_hashrate;
-use crate::network::event::{InternalResponse, handle_incoming_event};
+use crate::network::event_handling;
 use crate::network::behaviour::{BlockchainBehaviour, BlockchainBehaviourEvent, Topics};
 use crate::blockchain_io::{process_cmd, print_cmd_options};
-use crate::blockchain::pow;
-use crate::blockchain::block::Block;
 
 use libp2p::gossipsub::Behaviour;
 use log::info;
@@ -74,9 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     // Channels for new mined blocks
-    let (new_mined_block_tx, mut new_mined_block_rx) = mpsc::unbounded_channel();
-    // Channels to inform the miner about new last block of the chain
-    let (new_last_block_tx, mut new_last_block_rx) = mpsc::unbounded_channel();
+    // let (new_mined_block_tx, mut new_mined_block_rx) = mpsc::unbounded_channel();
+    // // Channels to inform the miner about new last block of the chain
+    // let (new_last_block_tx, mut new_last_block_rx) = mpsc::unbounded_channel();
     
     // Clear the screen every 10 events
     let mut event_counter = 0;
@@ -91,6 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     println!("Difficulty: {:?}", difficulty);
     let mut difficulty = difficulty.to_digits::<u8>(rug::integer::Order::MsfBe);
     while difficulty.len() < 32 {
+        // Pad the difficulty with zeros if it is shorter that the length of the ouput
+        // of the hash function (which in this case is 256 bits since we use sha256)
         difficulty.insert(0, 0);
     }
     println!("Starting the mining task with difficulty: {:?}", difficulty);
@@ -98,13 +98,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     // Dispatch the mine_blocks function
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
-        .worker_threads(6) // Set the number of worker threads
+        .worker_threads(3) // Set the number of worker threads
         .build()
         .unwrap();
 
-    runtime.spawn(async move {
-        pow::mine_blocks(&new_mined_block_tx, &mut new_last_block_rx, &difficulty, Block::genesis()).await;
-    });
+    // runtime.spawn(async move {
+    //     pow::mine_blocks(&new_mined_block_tx, &mut new_last_block_rx, &difficulty, Block::genesis()).await;
+    // });
 
     let thread_id = thread::current().id();
     println!("main function thread ID: {:?}", thread_id);
@@ -114,21 +114,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         tokio::select! {
             // TODO: create enum and hanlde every case using that enum to avoid huge code chunks
             // executed within select
-            Some(mined_block) = new_mined_block_rx.recv() => {
-                println!("Received mined block: {:?}", mined_block);
-                // let pending_event = BlockchainBehaviourEvent::BlockProposal(mined_block);
-                // let topic = Topics::Block;
-                // if let Err(e) = swarm.behaviour_mut().gossipsub.publish(
-                //     gossipsub::IdentTopic::new(topic.to_string()),
-                //     serde_json::to_vec(&pending_event).expect("can serialize message"))
-                // {
-                //     if let libp2p::gossipsub::PublishError::InsufficientPeers = e {
-                //         println!("No peers to share event with to :(");
-                //     } else {
-                //         panic!("Error while publishing message: {:?}", e);
-                //     }
-                // }
-            }
+            // Some(mined_block) = new_mined_block_rx.recv() => {
+            //     println!("Received mined block: {:?}", mined_block);
+            //     // let pending_event = BlockchainBehaviourEvent::BlockProposal(mined_block);
+            //     // let topic = Topics::Block;
+            //     // if let Err(e) = swarm.behaviour_mut().gossipsub.publish(
+            //     //     gossipsub::IdentTopic::new(topic.to_string()),
+            //     //     serde_json::to_vec(&pending_event).expect("can serialize message"))
+            //     // {
+            //     //     if let libp2p::gossipsub::PublishError::InsufficientPeers = e {
+            //     //         println!("No peers to share event with to :(");
+            //     //     } else {
+            //     //         panic!("Error while publishing message: {:?}", e);
+            //     //     }
+            //     // }
+            // }
             cmd_line = stdin.next_line() => {
                 let line = cmd_line.expect("can get line").expect("can read line from stdin");
                 println!("Received user input: {:?}", line);
@@ -151,15 +151,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                 // gossipsub::Event::Message is pre-defined by the libp2p-gossipsub crate.
                 SwarmEvent::Behaviour(BlockchainBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                     // Derived from the key
-                    propagation_source: _peer_id,
+                    propagation_source: peer_id,
                     // Random number incremented by 1 with each message
                     message_id: _id,
                     message,
                 })) => {
                     // Decerialize the message
                     let data = String::from_utf8_lossy(&message.data).to_string();
-                    handle_incoming_event(&data,
+                    event_handling::handle_incoming_network_event(&data,
                         &local_peer_id,
+                        &peer_id,
                         &mut swarm,
                         blockchain_filepath.as_str());
                 }

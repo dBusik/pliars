@@ -1,8 +1,8 @@
 use crate::blockchain::block::Block;
 use openssl::{sha::sha256, base64};
 use rand::Rng;
-use serde::{Serialize, Deserialize, Serializer};
-use serde::ser::SerializeSeq;
+use serde::{Serialize, Deserialize/*, Serializer*/};
+// use serde::ser::SerializeSeq;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write, BufRead};
 
@@ -11,7 +11,7 @@ pub struct Chain {
     pub blocks: Vec<Block>,
     // Abstract difficulty value of mining a block. Proof of work is used to find a nonce
     // such that the hash of (data||nonce) is less than 2^hash_output_length/difficulty.
-    pub difficulty: f64,
+    pub difficulty: Vec<u8>,
     // Parameter determining the number of hashes of previous blocks to be included in the
     // block. The number of hashes is defined by the network. If the idx of the block is
     // less than the number of hashes defined by the network, the block contains all the
@@ -23,11 +23,82 @@ pub struct Chain {
 pub enum ChainType {
     Local,
     Remote,
+    Both,
     NoChain,
 }
 
+#[derive(Debug)]
+pub struct ChainChoice {
+    pub chosen_chain_type: ChainType,
+    pub chosen_chain: Option<Chain>,
+}
+
+// Mechanism for choosing the longest chain
+pub fn find_longest_chain(local_chain: &Chain, remote_chain: &Chain) -> ChainChoice {
+    let local_chain_validation = local_chain.validate_chain();
+    let remote_chain_validation = remote_chain.validate_chain();
+    let winner_chain_type = if local_chain_validation && remote_chain_validation {
+        if local_chain.blocks.len() > remote_chain.blocks.len() {
+            ChainType::Local
+        } else if local_chain.blocks.len() < remote_chain.blocks.len() {
+            ChainType::Remote
+        } else {
+            // Return the chain with the lowest hash value of the last block if chains have
+            // equal length
+            let local_last_block_hash = local_chain.blocks.last().unwrap().hash();
+            let local_last_block_hash = base64::decode_block(&local_last_block_hash).unwrap();
+            let remote_last_block_hash = remote_chain.blocks.last().unwrap().hash();
+            let remote_last_block_hash = base64::decode_block(&remote_last_block_hash).unwrap();
+            
+            if local_last_block_hash < remote_last_block_hash {
+                ChainType::Local
+            } else if local_last_block_hash == remote_last_block_hash {
+                ChainType::Both
+            } else {
+                ChainType::Remote
+            }
+        }
+    } else if local_chain_validation {
+        eprintln!("Verification of the remote chain failed. \
+            The remote chain is invalid.");
+        ChainType::Local
+    } else if remote_chain_validation {
+        eprintln!("Verification of the current chain failed. \
+            The current chain is invalid.");
+        ChainType::Remote
+    } else {
+        eprintln!("Verification of the current adn remote chain failed.");
+        ChainType::NoChain
+    };
+
+    println!("Choosing the longest chain...");
+    let winner_chain = match winner_chain_type {
+        ChainType::Local => {
+            println!("Choosing the local chain.");
+            Some(local_chain)
+        },
+        ChainType::Remote => {
+            println!("Choosing the remote chain.");
+            Some(remote_chain)
+        },
+        ChainType::Both => {
+            println!("Chains are equal.");
+            None
+        },
+        ChainType::NoChain => {
+            println!("No valid chain to choose from.");
+            None
+        },
+    };
+
+    return ChainChoice {
+        chosen_chain_type: winner_chain_type,
+        chosen_chain: winner_chain.cloned()
+    };
+}
+
 impl Chain {
-    pub fn new(difficulty: f64, num_side_links: usize) -> Chain {
+    pub fn new(difficulty: Vec<u8>, num_side_links: usize) -> Chain {
         Chain {
             blocks: Vec::new(),
             difficulty,
@@ -46,7 +117,7 @@ impl Chain {
         Ok(Chain {
             blocks,
             // TODO: determine how to store difficulty and num_side_links in the file
-            difficulty: 0.0,
+            difficulty: Vec::new(),
             num_side_links: 0,
         })
     }
@@ -142,25 +213,6 @@ impl Chain {
         hashes
     }
 
-    pub fn choose_longest_chain(&mut self, remote_chain: &Chain) -> ChainType {
-        println!("Choosing the longest chain...");
-        let chain_type = self.find_longest_chain(remote_chain);
-        match chain_type {
-            ChainType::Local => {
-                println!("Choosing the local chain.");
-            },
-            ChainType::Remote => {
-                println!("Choosing the remote chain.");
-                self.blocks = remote_chain.blocks.clone();
-            },
-            ChainType::NoChain => {
-                panic!("No valid chain to choose from.");
-            },
-        }
-
-        chain_type
-    }
-
     fn validate_block(&self, block: &Block) -> bool {
         // Check if the block is the genesis block
         if block.idx == 1 {
@@ -192,13 +244,12 @@ impl Chain {
         }
 
         // Check the proof of work
-        let difficulty_value: &[u8] = &(2.0f64.powi(256) / self.difficulty as f64).to_be_bytes();
         let hash_result = sha256(&[block.hash().as_bytes(), block.pow.as_bytes()].concat());
         let token = hash_result.as_slice();
-        if token.cmp(difficulty_value) != std::cmp::Ordering::Less {
+        if token.cmp(&self.difficulty) != std::cmp::Ordering::Less {
             eprintln!("Verification of block with ID {}. \
                 Invalid proof of work: {:?} >= {:?}",
-                block.idx, token, difficulty_value);
+                block.idx, token, self.difficulty);
             return false;
         }
 
@@ -232,42 +283,5 @@ impl Chain {
         }
 
         true
-    }
-
-    // Mechanism for choosing the longest chain
-    fn find_longest_chain(&mut self, remote_chain: &Chain) -> ChainType {
-        let local_chain_validation = self.validate_chain();
-        let remote_chain_validation = remote_chain.validate_chain();
-        if local_chain_validation && remote_chain_validation {
-            if self.blocks.len() > remote_chain.blocks.len() {
-                ChainType::Local
-            } else if self.blocks.len() < remote_chain.blocks.len() {
-                ChainType::Remote
-            } else {
-                // Return the chain with the lowest hash value of the last block if chains have
-                // equal length
-                let local_last_block_hash = self.blocks.last().unwrap().hash();
-                let local_last_block_hash = base64::decode_block(&local_last_block_hash).unwrap();
-                let remote_last_block_hash = remote_chain.blocks.last().unwrap().hash();
-                let remote_last_block_hash = base64::decode_block(&remote_last_block_hash).unwrap();
-                
-                if local_last_block_hash <= remote_last_block_hash {
-                    ChainType::Local
-                } else {
-                    ChainType::Remote
-                }
-            }
-        } else if local_chain_validation {
-            eprintln!("Verification of the remote chain failed. \
-                The remote chain is invalid.");
-            ChainType::Local
-        } else if remote_chain_validation {
-            eprintln!("Verification of the current chain failed. \
-                The current chain is invalid.");
-            ChainType::Remote
-        } else {
-            eprintln!("Verification of the current adn remote chain failed.");
-            ChainType::NoChain
-        }
     }
 }

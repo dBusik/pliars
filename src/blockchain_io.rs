@@ -52,22 +52,24 @@ pub fn process_cmd(user_input: String,
         },
         Some("init") => {
             println!("init received");
-            let network_difficulty_secs: Option<f64> = if let Some(difficulty) = user_input.next() {
-                let diff_val = difficulty.parse().expect("can parse difficulty");
+            let difficulty_secs: Option<f64> = if let Some(difficulty) = user_input.next() {
+                let diff_val = difficulty.parse()
+                    .expect("can parse difficulty");
                 Some(diff_val)
             } else {
                 None
             };
 
             let num_side_links: Option<usize> = if let Some(sidelinks_num) = user_input.next() {
-                let sidel_val = sidelinks_num.parse().expect("can parse number of sidelinks");
+                let sidel_val = sidelinks_num.parse()
+                    .expect("can parse number of sidelinks");
                 Some(sidel_val)
             } else {
                 None
             };
 
-            let event = NetworkEvent::Init{
-                difficulty: network_difficulty_secs,
+            let event = NetworkEvent::InitFromUserIo {
+                difficulty: difficulty_secs,
                 num_sidelinks:num_side_links
             };
             event.send(swarm, blockchain_file);

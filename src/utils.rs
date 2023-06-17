@@ -22,6 +22,21 @@ pub fn find_my_hashrate() -> usize {
     count
 }
 
+pub fn difficulty_from_secs(difficulty_in_secs: f64, hashrate: f64) -> Vec<u8> {
+    let difficulty = (2.0f64.powi(256) - 1.0) / (difficulty_in_secs * hashrate);
+    let difficulty = rug::Float::with_val(256, difficulty);
+    let difficulty = difficulty.trunc().to_integer().unwrap();
+    
+    let mut difficulty = difficulty.to_digits::<u8>(rug::integer::Order::MsfBe);
+    while difficulty.len() < 32 {
+        // Pad the difficulty with zeros if it is shorter that the length of the ouput
+        // of the hash function (which in this case is 256 bits since we use sha256)
+        difficulty.insert(0, 0);
+    }
+
+    difficulty
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
