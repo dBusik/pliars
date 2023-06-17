@@ -66,7 +66,10 @@ pub fn process_cmd(user_input: String,
                 None
             };
 
-            let event = NetworkEvent::Init(network_difficulty_secs, num_side_links);
+            let event = NetworkEvent::Init{
+                difficulty: network_difficulty_secs,
+                num_sidelinks:num_side_links
+            };
             event.send(swarm, blockchain_file);
         },
         Some("listpeers") => {
