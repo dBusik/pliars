@@ -11,7 +11,7 @@ use crate::utils;
 use super::CHAIN_INITIALIZED;
 use crate::network::behaviour::Topics;
 
-pub const DEFAULT_DIFFICULTY_IN_SECONDS: f64 = 10.0;
+pub const DEFAULT_DIFFICULTY_IN_SECONDS: f64 = 30.0;
 pub const DEFAULT_NUM_OF_SIDELINKS: usize = 5;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -76,9 +76,9 @@ impl NetworkEvent {
                     return;
                 }
 
-                println!("Trying to send to other peers Init event with difficulty:
+                println!("Trying to send to other peers Init event with difficulty: \
                     {:?}[secs] (or {:?} as u8 vector) and number of sidelinks: {:?}",
-                    difficulty, difficulty_in_secs, num_sidelinks);
+                    difficulty_in_secs, difficulty, num_sidelinks);
 
                 unsafe { CHAIN_INITIALIZED = true; }
                 let pending_event = NetworkEvent::InitUsingChain(blockchain);
@@ -127,7 +127,7 @@ pub fn send_network_event(
         NetworkEvent::Message { .. } => Topics::Message,
         // If mining or user io event is received, do not send it to other peers
         _ => {
-            println!("Received local event: {:?}; local events are not meant to be sent
+            println!("Received local event: {:?}; local events are not meant to be sent\
                 to other peers", pending_event);
             return;
         },

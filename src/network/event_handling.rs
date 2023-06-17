@@ -13,6 +13,7 @@ enum ChainAndFileValidity {
 }
 
 fn verify_and_save_chain(chain: &Chain, blockchain_file: &str) -> ChainAndFileValidity {
+    print!("Validating the chain and writing it to the file...");
     let chain_valid = chain.validate_chain();
     let chain_saved = if chain_valid {
         chain.save_blockchain_to_file(blockchain_file).is_ok()
@@ -21,10 +22,19 @@ fn verify_and_save_chain(chain: &Chain, blockchain_file: &str) -> ChainAndFileVa
     };
 
     match (chain_valid, chain_saved) {
-        (true, true) => ChainAndFileValidity::ValidChainAndFile,
-        (true, false) => ChainAndFileValidity::InvalidFile,
+        (true, true) => {
+            println!("[SUCCESS] Chain is valid and saved to file");
+            ChainAndFileValidity::ValidChainAndFile
+        },
+        (true, false) => {
+            println!("[FAIL] Chain is valid but could not be saved to file");
+            ChainAndFileValidity::InvalidFile
+        }
         // (false, true) is not possible
-        (false, _) => ChainAndFileValidity::InvalidChain,
+        (false, _) => {
+            println!("[FAIL] Chain is invalid");
+            ChainAndFileValidity::InvalidChain
+        }
     }
 }
 
@@ -43,8 +53,8 @@ fn choose_chain(remote_chain: Chain,
 
     // If the chain was not initialized or we could not load the local chain from file
     if winner_chain_choice.is_none() {
-        println!("Local chain did not load from file successfully.
-        Veryfiyng remote chain and saving it as local chain");
+        println!("Local chain did not load from file successfully.\
+            Veryfiyng remote chain and saving it as local chain");
         let remote_chain_valid_and_saved = verify_and_save_chain(&remote_chain,
             blockchain_file);
 
@@ -61,6 +71,24 @@ fn choose_chain(remote_chain: Chain,
         }
     };
 
+    if winner_chain_choice.is_some() {
+        // If remote chain won store it as local chain\
+        let unwrapped_choice = winner_chain_choice.as_ref().unwrap();
+        if let ChainType::Remote = unwrapped_choice.chosen_chain_type {
+            if let Some(remote_chain) = unwrapped_choice.chosen_chain.as_ref() {
+                if remote_chain.save_blockchain_to_file(blockchain_file).is_err() {
+                    println!("Error while saving remote blockchain to file,\
+                        cancelling the init event");
+                    winner_chain_choice = Some(ChainChoice {
+                        chosen_chain_type: ChainType::NoChain,
+                        chosen_chain: None,
+                    });
+                }
+                println!("Remote chain saved to file")
+            }
+        }
+    }
+
     winner_chain_choice
 }
 
@@ -71,7 +99,7 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
     // Only print the type of chain that won if none won or if remote chain won,
     // but if local chain won, propagate to others since it is longer/better
     if chosen_chain.is_none() {
-        println!("Received None as choice of the chain result.
+        println!("Received None as choice of the chain result.\
             Should be at least NoChain if a comparison was made. There is a logic error in code.");
         return;
     }
@@ -94,7 +122,8 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
             println!("Chains were equal.");
         },
         ChainType::Remote => {
-            println!("Remote chain won.");
+            println!("Remote chain from peer {} won.",
+                chain_received_from_peer_id.to_string());
         },
     }
 }
@@ -115,7 +144,7 @@ fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
         },
         ChainAndFileValidity::InvalidChain => {
             // Ask the other peer for the chain again
-            println!("Received remote chain from {} but it is invalid.
+            println!("Received remote chain from {} but it is invalid.\
                 Ignoring it", received_from_peer_id.to_string());
             let event = NetworkEvent::RemoteChainRequest {
                 asked_peer_id: received_from_peer_id.to_string(),
@@ -129,7 +158,7 @@ fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
             // what is going on with the file (obviously if the problem was
             // with, e.g. chain's encoding, the user will just ask for the
             // chain but manually)
-            println!("Error while saving remote blockchain to file,
+            println!("Error while saving remote blockchain to file,\
                 cancelling the init event");
             return;
         }
@@ -205,7 +234,7 @@ pub fn handle_incoming_network_event(event_data: &String,
         _ => {
             // This events won't actually be sent by other peers, code is present for
             // possible extension of the communication between the peers
-            println!("For some reason received {:?} event from network.
+            println!("For some reason received {:?} event from network.\
                 Ignoring it.", event);
         }
     }
