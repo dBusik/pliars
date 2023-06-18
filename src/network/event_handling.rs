@@ -4,6 +4,7 @@ use crate::blockchain::{
 };
 use crate::BlockchainBehaviour;
 use super::event::{NetworkEvent, CHAIN_INITIALIZATION_DONE};
+use log::{warn, info, error};
 use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq)]
@@ -14,7 +15,7 @@ enum ChainAndFileValidity {
 }
 
 fn verify_and_save_chain(chain: &Chain, blockchain_file: &str) -> ChainAndFileValidity {
-    print!("Validating the chain and writing it to the file...");
+    info!("Validating the chain and writing it to the file...");
     let chain_valid = chain.validate_chain();
     let chain_saved = if chain_valid {
         chain.save_blockchain_to_file(blockchain_file).is_ok()
@@ -24,16 +25,16 @@ fn verify_and_save_chain(chain: &Chain, blockchain_file: &str) -> ChainAndFileVa
 
     match (chain_valid, chain_saved) {
         (true, true) => {
-            println!("[SUCCESS] Chain is valid and saved to file");
+            info!("[SUCCESS] Chain is valid and saved to file");
             ChainAndFileValidity::ValidChainAndFile
         },
         (true, false) => {
-            println!("[FAIL] Chain is valid but could not be saved to file");
+            error!("[FAIL] Chain is valid but could not be saved to file");
             ChainAndFileValidity::InvalidFile
         }
         // (false, true) is not possible
         (false, _) => {
-            println!("[FAIL] Chain is invalid");
+            error!("[FAIL] Chain is invalid");
             ChainAndFileValidity::InvalidChain
         }
     }
@@ -54,8 +55,10 @@ fn choose_chain(remote_chain: Chain,
 
     // If the chain was not initialized or we could not load the local chain from file
     if winner_chain_choice.is_none() {
-        println!("Local chain did not load from file successfully.\
+        // Print error using red colour
+        warn!("Local chain did not load from file successfully.\
             Veryfiyng remote chain and saving it as local chain");
+
         let remote_chain_valid_and_saved = verify_and_save_chain(&remote_chain,
             blockchain_file);
 
@@ -78,14 +81,14 @@ fn choose_chain(remote_chain: Chain,
         if let ChainType::Remote = unwrapped_choice.chosen_chain_type {
             if let Some(remote_chain) = unwrapped_choice.chosen_chain.as_ref() {
                 if remote_chain.save_blockchain_to_file(blockchain_file).is_err() {
-                    println!("Error while saving remote blockchain to file,\
+                    error!("Error while saving remote blockchain to file,\
                         cancelling the init event");
                     winner_chain_choice = Some(ChainChoice {
                         chosen_chain_type: ChainType::NoChain,
                         chosen_chain: None,
                     });
                 }
-                println!("Remote chain saved to file")
+                info!("Remote chain saved to file")
             }
         }
     }
@@ -102,14 +105,14 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
     // Only print the type of chain that won if none won or if remote chain won,
     // but if local chain won, propagate to others since it is longer/better
     if chosen_chain.is_none() {
-        println!("Received None as choice of the chain result.\
+        error!("Received None as choice of the chain result.\
             Should be at least NoChain if a comparison was made. There is a logic error in code.");
         return;
     }
     let chosen_chain = chosen_chain.unwrap();
     match chosen_chain.chosen_chain_type {
         ChainType::NoChain => {
-            println!("Both chains were invalid.");
+            warn!("Both chains were invalid.");
             // TODO: myabe do something about this? Like loading only genesis block into
             // the file
             // let mut blank_chain = unsafe { Chain::new(
@@ -125,7 +128,7 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
             // event.send(swarm);
         },
         ChainType::Local => {
-            println!("Local chain won.");
+            info!("Local chain won.");
             if let Some(local_chain) = chosen_chain.chosen_chain {
                 let event = NetworkEvent::RemoteChainResponse{
                     chain_from_sender: local_chain,
@@ -135,7 +138,7 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
             }
         },
         ChainType::Both => {
-            println!("Chains were equal.");
+            info!("Chains were equal.");
         },
         ChainType::Remote => {
             new_last_block_tx.send(chosen_chain.chosen_chain
@@ -144,7 +147,7 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
                 .unwrap()
                 .clone()
             ).unwrap();
-            println!("Remote chain from peer {} won.",
+            info!("Remote chain from peer {} won.",
                 chain_received_from_peer_id.to_string());
         },
     }
@@ -161,7 +164,7 @@ fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
     match remote_chain_save_result {
         ChainAndFileValidity::ValidChainAndFile => {
             // TODO: calculate my hashrate and new difficulty and propagate it to other peers?
-            println!("Received remote chain from {} and saved it to file",
+            info!("Received remote chain from {} and saved it to file",
                 received_from_peer_id.to_string());
             unsafe {
                 CHAIN_INITIALIZATION_DONE = true;
@@ -174,7 +177,7 @@ fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
         },
         ChainAndFileValidity::InvalidChain => {
             // Ask the other peer for the chain again
-            println!("Received remote chain from {} but it is invalid. \
+            warn!("Received remote chain from {} but it is invalid. \
                 Ignoring it.", received_from_peer_id.to_string());
             // TODO: alternatively look for somebody else with the chain?
             // (But they would have sent the block anyway)
@@ -186,7 +189,7 @@ fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
             // what is going on with the file (obviously if the problem was
             // with, e.g. chain's encoding, the user will just ask for the
             // chain but manually)
-            println!("Error while saving remote blockchain to file,\
+            error!("Error while saving remote blockchain to file,\
                 cancelling the init event");
             return;
         }
@@ -201,7 +204,7 @@ pub fn handle_incoming_network_event(event_data: &String,
     local_chain_file: &str,
 ) {
     let event = NetworkEvent::from_string(event_data);
-    println!("Received event: {:?}", event);
+    info!("Received event: {:?}", event.variant_name());
     match event {
         NetworkEvent::InitUsingChain(remote_chain) => {
             if unsafe { !CHAIN_INITIALIZATION_DONE } {
@@ -227,18 +230,18 @@ pub fn handle_incoming_network_event(event_data: &String,
             // Validate the block, if valid add it to the chain and send to the mining task
             // since now it should use this block as the last block in the chain
             if Chain::validate_block_using_file(&block, local_chain_file) {
-                println!("Block is valid");
+                info!("Block is valid");
                 let block_copy = block.clone();
                 if let Err(e) = new_last_block_tx.send(block_copy) {
-                    println!("error sending new mined block via channel, {}", e);
+                    error!("Error sending new base block for mining via channel, {}", e);
                 } else {
-                    println!("Sent new mined block via channel");
+                    info!("Sent new block to be the base for mining via channel");
                     if let Err(e) = Chain::append_block_to_file(&block, local_chain_file) {
-                        println!("Error while appending block to file: {}", e);
+                        error!("Error while appending block to file: {}", e);
                     }
                 }
             } else {
-                println!("Block validation failed, asking the peer for the whole chain.");
+                error!("Block validation failed, asking the peer for the whole chain.");
                 let event = NetworkEvent::RemoteChainRequest {
                     asked_peer_id: received_from_peer_id.to_string(),
                 };
@@ -247,7 +250,7 @@ pub fn handle_incoming_network_event(event_data: &String,
         }
         NetworkEvent::RemoteChainRequest { asked_peer_id } => {
             if asked_peer_id == local_peer_id.to_string() {
-                println!("Sending local chain to {}", asked_peer_id);
+                info!("Sending local chain to {}", asked_peer_id);
                 // Check if chain is ok and ignore if not
                 if let Ok(local_chain) = Chain::load_from_file(local_chain_file) {
                     let event = NetworkEvent::RemoteChainResponse {
@@ -256,7 +259,7 @@ pub fn handle_incoming_network_event(event_data: &String,
                     };
                     event.send(swarm);
             } else {
-                    println!("Chain is not valid. Ignoring RemoteChainRequest event from {}",
+                    warn!("Chain is not valid. Ignoring RemoteChainRequest event from {}",
                         received_from_peer_id.to_string());
                 };
             }
@@ -271,7 +274,7 @@ pub fn handle_incoming_network_event(event_data: &String,
                         received_from_peer_id,
                         swarm);
                 } else {
-                    println!("Received local chain from {}", received_from_peer_id.to_string());
+                    info!("Received local chain from {}", received_from_peer_id.to_string());
                     let chosen_chain = choose_chain(
                         remote_chain,
                         local_chain_file);
@@ -285,12 +288,12 @@ pub fn handle_incoming_network_event(event_data: &String,
             }
         }
         NetworkEvent::Message { message, from_peer_id } => {
-            println!("Received Message event: {:?} from {:?}", message, from_peer_id);
+            info!("Received Message event: {:?} from {:?}", message, from_peer_id);
         }
         _ => {
             // This events won't actually be sent by other peers, code is present for
             // possible extension of the communication between the peers
-            println!("For some reason received {:?} event from network.\
+            error!("For some reason received {:?} event from network.\
                 Ignoring it.", event);
         }
     }

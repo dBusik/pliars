@@ -3,6 +3,7 @@ use rand::Rng;
 use tokio::sync::mpsc;
 use core::panic;
 use std::thread;
+use log::{info, error};
 
 use crate::blockchain::{block::Block, chain::Chain};
 
@@ -64,8 +65,9 @@ fn prove_the_work(difficulty: &Vec<u8>,
                 // mining a new block with the data of the new last block
                 nonce = rand::thread_rng().gen::<u64>();
                 new_block.previous_block_hash = new_last_block.hash();
+                new_block.idx = new_last_block.idx + 1;
                 counter = 0;
-                println!("New last block with hash {} received. Discarding the current block and\
+                info!("New last block with hash {} received. Discarding the current block and \
                     starting mining a new block with the data of the new last block.",
                     new_block.previous_block_hash);
                 continue;
@@ -101,7 +103,7 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
         block
     } else {
         // Lock the thread and wait on the channel
-        println!("[MINER]: Waiting for chain initialization...\
+        info!("[MINER]: Waiting for chain initialization...\
             (either get somebody's chain or use the init command)");
         new_last_block_rx.recv().await.unwrap()
     };
@@ -110,7 +112,7 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     let difficulty = difficulty.clone();
 
     let thread_id = thread::current().id();
-    println!("Miner starting thread ID: {:?}", thread_id);
+    info!("Miner starting thread ID: {:?}", thread_id);
 
     loop {
         let mined_block = prove_the_work(&difficulty, &last_block, new_last_block_rx);
@@ -122,7 +124,7 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
                 last_block = new_last_block;
             }
             _ = tokio::task::yield_now() => {
-                println!("Sending new block with such proof of work via channel: {}", mined_block.pow);
+                info!("Sending new block with such proof of work via channel: {}", mined_block.pow);
                 // TODO: this should use sidelinks (i.e. generate random indices of blocks using this hash
                 // and then calculate their hashes and concatenate them with this hash and use it as data)
 
@@ -130,26 +132,26 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
                 // println!("New block: {:?}", mined_block);
                 let new_last_block = mined_block.clone();
                 if let Err(e) = Chain::append_block_to_file(&mined_block, blockchain_filepath) {
-                    println!("Error appending block to file. Block will be discarded: {}.", e);
+                    error!("Error appending block to file. Block will be discarded: {}.", e);
                 } else {
-                    println!("Block appended to file.");
+                    info!("Block appended to file.");
                     if let Err(e) = new_mined_block_tx.send(mined_block) {
-                        println!("Error sending new mined block via channel, {}", e);
+                        error!("Error sending new mined block via channel, {}", e);
                         if let Err(e) = Chain::remove_last_block_from_file(blockchain_filepath) {
-                            println!("Tried to remove last block from the file due to
+                            error!("Tried to remove last block from the file due to
                                 usuccessful broadcast of the new block but error occured: {}", e);
                         } else {
-                            println!("Last block removed from file since broadcast of the block\
+                            info!("Last block removed from file since broadcast of the block\
                                 failed.");
                         }
                     } else {
-                        println!("Sent new mined block via channel");
+                        info!("Sent new mined block via channel");
                         last_block = new_last_block;
                     }
                 }
             }
             // _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-            //     println!("Mining...");
+            //     info!("Mining...");
             // }
         }
     }

@@ -274,11 +274,15 @@ impl Chain {
         file_name: &str,
     ) -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut file = OpenOptions::new()
+        let mut file = if let Ok(file) = OpenOptions::new()
             .write(true)
             .append(true)
             .open(file_name)
-            .expect("Unable to open the file");
+        {
+            file
+        } else {
+            return Err("Error while opening the file to append the block".into());
+        };
 
         let block_string = serde_json::to_string(block)?;
         file.write_all(format!("{}\n", block_string).as_bytes())?;
@@ -352,8 +356,6 @@ impl Chain {
         true
     }
 
-    // difficulty: unsafe { DIFFICULTY_VALUE.clone() },
-
     fn validate_block_core(block: &Block,
         blockchain_filepath: Option<&str>,
         chain: Option<&Chain>,
@@ -415,7 +417,7 @@ impl Chain {
             if token.cmp(block.difficulty.as_slice()) != std::cmp::Ordering::Less {
                 println!("Verification of block with ID {}. \
                     Invalid proof of work: {:?} >= {:?}",
-                    block.idx, token, unsafe { DIFFICULTY_VALUE.as_slice() });
+                    block.idx, token, block.difficulty.as_slice());
                 return false;
             }
 

@@ -1,13 +1,11 @@
 use serde::{Serialize, Deserialize};
 use libp2p::gossipsub;
 
-use crate::blockchain::block;
 use crate::blockchain::{
     block::Block,
-    chain::{Chain, DIFFICULTY_VALUE},
+    chain::Chain,
 };
 use crate::BlockchainBehaviour;
-use crate::utils;
 use crate::network::behaviour::Topics;
 
 pub static mut CHAIN_INITIALIZATION_DONE: bool = false;

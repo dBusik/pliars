@@ -8,11 +8,9 @@ use crate::network::behaviour::{BlockchainBehaviour, BlockchainBehaviourEvent, T
 use crate::blockchain_io::{process_non_init_cmd, print_cmd_options};
 use blockchain::{
     pow,
-    block,
     chain::{Chain, DIFFICULTY_VALUE, DEFAULT_DIFFICULTY_IN_SECONDS, DEFAULT_NUM_OF_SIDELINKS}};
 
 use libp2p::gossipsub::Behaviour;
-use log::info;
 use tokio::{self, sync::mpsc, io::AsyncBufReadExt};
 use std::{time::Duration};
 use libp2p::core::{upgrade};
@@ -20,6 +18,7 @@ use libp2p::futures::StreamExt;
 use libp2p::swarm::{SwarmBuilder, SwarmEvent};
 use libp2p::{identity, Transport, noise, tcp, PeerId, yamux, gossipsub, mdns};
 use std::thread;
+use log::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>>{
@@ -30,8 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     let blockchain_filepath = format!("./blockchain_storage_{local_peer_id}.json");
 
     info!("Starting the node... PEER ID: {local_peer_id}");
-    info!("[PEER ID {}], My hashrate: {} hashes/s", local_peer_id, utils::find_my_hashrate());
-    
+    info!("[PEER ID {}] blockchain filepath: {}", local_peer_id, blockchain_filepath);
+
     // Set encrypted DNS-enabled TCP transport over yamux multiplexing
     let tcp_transport = tcp::tokio::Transport::default()
         .upgrade(upgrade::Version::V1Lazy)
@@ -85,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     // Spawn the block mining task
     let hashrate: f64 = utils::find_my_hashrate() as f64;
     let difficulty = utils::difficulty_from_secs(DEFAULT_DIFFICULTY_IN_SECONDS, hashrate);
-    println!("Starting the mining task with difficulty: {:?}", difficulty);
+    info!("[SYSTEM] Starting the mining task with difficulty: {:?}", difficulty);
     
     // Dispatch the mine_blocks function
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -104,27 +103,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     });
 
     let thread_id = thread::current().id();
-    println!("main function thread ID: {:?}", thread_id);
+    info!("[SYSTEM] Main function thread ID: {:?}", thread_id);
 
     loop {
-        println!("Waiting for event...");
+        info!("Waiting for event...");
         tokio::select! {
             // TODO: create enum and hanlde every case using that enum to avoid huge code chunks
             // executed within select
             Some(mined_block) = new_mined_block_rx.recv() => {
-                println!("Received mined block: {:?}", mined_block);
+                // println!("[NEW_BLOCK_MINED] Received mined block: {:?}", mined_block);
+                info!("[NEW_BLOCK_MINED] Received mined block; idx = {}", mined_block.idx);
                 let block_proposal = NetworkEvent::BlockProposal(mined_block);
                 block_proposal.send(&mut swarm);
             }
             cmd_line = stdin.next_line() => {
                 let line = cmd_line.expect("can get line").expect("can read line from stdin");
-                println!("Received user input: {:?}", line);
+                info!("[NEW_USER_INPUT] {:?}", line);
                 // If line is "init" then process the event here, otherwise use
                 // the process_cmd function
                 if line.starts_with("init") {
-                    println!("init received");
+                    info!("Init received");
                     if unsafe { CHAIN_INITIALIZATION_DONE } {
-                        println!("Blockchain exists. Not initializing the blockchain");
+                        warn!("Blockchain exists. Not initializing the blockchain");
                         // Jump out of the match and continue the loop
                         continue;
                     }
@@ -135,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     // }
 
                     let hashrate: f64 = utils::find_my_hashrate() as f64;
-                    println!("My hashrate: {}", hashrate);
+                    info!("My hashrate: {}", hashrate);
 
                     let mut user_input = line.split_whitespace();
     
@@ -174,25 +174,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     blockchain.init_first_block();
                     // blockchain.add_block(block::Block::genesis());
                     
-                    println!("Saving blockchain to file {}", blockchain_filepath);
+                    info!("Saving blockchain to file {}", blockchain_filepath);
                     if blockchain.save_blockchain_to_file(&blockchain_filepath).is_err() {
-                        println!("Error while saving blockchain to file, cancelling the init event");
+                        error!("Error while saving blockchain to file, cancelling the init event");
                     }
 
                     // TODO: user input difficulty is ignored since the code is not ready for
                     // dynamic difficulty adjustment        
-                    // println!("Trying to send to other peers Init event with difficulty: \
+                    // info!("Trying to send to other peers Init event with difficulty: \
                     //     {:?}[secs] (or {:?} as u8 vector) and number of sidelinks: {:?}",
-                    //     difficulty_in_secs, difficulty, num_sidelinks);
-
-                    println!("Trying to send to other peers Init event with difficulty: \
-                        {:?}[secs] (or {:?} as u8 vector) and number of sidelinks: {:?}",
-                        DEFAULT_DIFFICULTY_IN_SECONDS, difficulty, num_sidelinks);
+                    //     DEFAULT_DIFFICULTY_IN_SECONDS, difficulty, num_sidelinks);
 
                     unsafe {
                         CHAIN_INITIALIZATION_DONE = true;
                         DIFFICULTY_VALUE = difficulty.clone();
-                        println!("Difficulty set to {:?}", DIFFICULTY_VALUE);
+                        info!("Difficulty set to {:?}", DIFFICULTY_VALUE);
                     }
                     // Send new last block to mining thread
                     new_last_block_tx.send(blockchain.get_last_block().unwrap().clone()).unwrap();
@@ -204,13 +200,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
             network_event = swarm.select_next_some() => match network_event {
                 SwarmEvent::Behaviour(BlockchainBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                     for (peer_id, _multiaddr) in list {
-                        println!("mDNS discovered a new peer: {peer_id}");
+                        info!("[NETWORK] mDNS discovered a new peer: {peer_id}");
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
                 },
                 SwarmEvent::Behaviour(BlockchainBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                     for (peer_id, _multiaddr) in list {
-                        println!("mDNS discover peer has expired: {peer_id}");
+                        info!("[NETWORK] mDNS discover peer has expired: {peer_id}");
                         swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                     }
                 },
@@ -225,7 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                 })) => {
                     // Decerialize the message
                     let data = String::from_utf8_lossy(&message.data).to_string();
-                    println!("Received message: {:?}", data);
+                    // info!("[NETWORK] Received message: {:?}", data);
                     event_handling::handle_incoming_network_event(&data,
                         &local_peer_id,
                         &peer_id,
@@ -234,10 +230,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                         &blockchain_filepath);
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {
-                    println!("Local node is listening on {address}");
+                    info!("[NETWORK] Local node is listening on {address}");
                 }
                 _ => {
-                    println!("Unhandled swarm event: {:?}", network_event);
+                    // info!("[NETWORK] Unhandled swarm event: {:?}", network_event);
+                    info!("[NETWORK] Unhandled swarm event");
                 }
             }
         }
