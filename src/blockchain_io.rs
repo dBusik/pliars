@@ -23,6 +23,8 @@ use crate::blockchain::{
         printblock  <block index>           - display contents of a chosen block
         numberblocks                        - display number of blocks in the chain
         talk <message>                      - send a text message to all other peers (will wave if no message is provided)
+        myid                                - print your peer id
+        myfile                              - print your blockchain file path
         exit                                - exit the program
  */
 
@@ -36,6 +38,8 @@ pub fn print_cmd_options() {
         \tprintblock  <block index>         - display contents of a chosen block\n\
         \tnumberblocks                      - display number of blocks in the chain\n\
         \ttalk <message>                    - send a text message to all other peers (will wave if no message is provided)\n\
+        \tmyid                              - print your peer id\n\
+        \tmyfile                            - print your blockchain file path\n\
         \texit                              - exit the program"
     );
 }
@@ -135,6 +139,14 @@ pub fn process_non_init_cmd(user_input: String,
                 from_peer_id: local_peer_id.to_string(),
             };
             event.send(swarm);
+        },
+        Some("myid") => {
+            println!("myid received");
+            println!("Your peer id: {}", local_peer_id.to_string());
+        },
+        Some("myfile") => {
+            println!("myfile received");
+            println!("Your blockchain file path: {}", blockchain_file);
         },
         Some("exit") => {
             println!("exit received");
