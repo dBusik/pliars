@@ -5,10 +5,12 @@ mod blockchain_io;
 
 use crate::network::{event::{NetworkEvent, CHAIN_INITIALIZATION_DONE}, event_handling};
 use crate::network::behaviour::{BlockchainBehaviour, BlockchainBehaviourEvent, Topics};
-use crate::blockchain_io::{process_non_init_cmd, print_cmd_options};
+use crate::blockchain_io::{process_simple_cmd, print_cmd_options};
 use blockchain::{
     pow,
-    chain::{Chain, DIFFICULTY_VALUE, DEFAULT_DIFFICULTY_IN_SECONDS, DEFAULT_NUM_OF_SIDELINKS}};
+    chain::{Chain, DIFFICULTY_VALUE, DEFAULT_DIFFICULTY_IN_SECONDS, DEFAULT_NUM_OF_SIDELINKS},
+    block::Record,
+};
 
 use libp2p::gossipsub::Behaviour;
 use tokio::{self, sync::mpsc, io::AsyncBufReadExt};
@@ -19,6 +21,7 @@ use libp2p::swarm::{SwarmBuilder, SwarmEvent};
 use libp2p::{identity, Transport, noise, tcp, PeerId, yamux, gossipsub, mdns};
 use std::thread;
 use log::{error, info, warn};
+use chrono::Utc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>>{
@@ -53,9 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     ).expect("Correct network behaviour configuration");
 
     // Create topics and subscribe to them
-    for topic in [Topics::Block, Topics::Chain, Topics::Message].iter() {
+    for topic in [Topics::Block, Topics::Chain, Topics::Message, Topics::Record].iter() {
         let topic = gossipsub::IdentTopic::new(topic.to_string());
         gossipsub.subscribe(&topic).expect("Subscribed to topic");
+        info!("Subscribed to topic: {:?}", topic);
     }
 
     // Create a swarm to manage peers and events
@@ -72,11 +76,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     info!("Listening. Network info {:?}", swarm.network_info());
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    // // Channels for new mined blocks
+    // Channels for new mined blocks
     let (new_mined_block_tx, mut new_mined_block_rx) = mpsc::unbounded_channel();
-    // // Channels to inform the miner about new last block of the chain
+    // Channels to inform the miner about new last block of the chain
     let (new_last_block_tx, mut new_last_block_rx) = mpsc::unbounded_channel();
-    
+    // Channel to send new records to the minder thread so that they will be appended to the
+    // block being mined
+    let (new_record_tx, mut new_record_rx) = mpsc::unbounded_channel();
+
     // Clear the screen every 10 events
     let mut event_counter = 0;
     print_cmd_options();
@@ -98,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     runtime.spawn(async move {
         pow::mine_blocks(&new_mined_block_tx,
             &mut new_last_block_rx,
+            &mut new_record_rx,
             &difficulty_copy,
             &fpath_copy).await;
     });
@@ -193,8 +201,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     // Send new last block to mining thread
                     new_last_block_tx.send(blockchain.get_last_block().unwrap().clone()).unwrap();
                     NetworkEvent::InitUsingChain(blockchain).send(&mut swarm);             
+                } else if line.starts_with("rec") {
+                    info!("rec received");
+                    let mut user_input = line.split_whitespace();
+                    // Second word is record data
+                    let record_data = if let Some(data) = user_input.nth(1) {
+                        data.to_string()
+                    } else {
+                        warn!("No record data provided");
+                        continue;
+                    };
+
+                    let new_record = Record::new(record_data.clone(), 
+                        local_peer_id.to_string());
+                    let new_record_clone = new_record.clone();
+                    if let Err(e) = new_record_tx.send(new_record) {
+                        error!("Error sending new record to the mining thread: {}", e);
+                    } else {
+                        info!("Sending new record with data {:?} other peers", new_record_clone);
+                        NetworkEvent::NewRecord(new_record_clone).send(&mut swarm);
+                    }
                 } else {
-                    process_non_init_cmd(line, &mut swarm, &local_peer_id, blockchain_filepath.as_str());
+                    process_simple_cmd(line, &mut swarm, &local_peer_id, blockchain_filepath.as_str());
                 }
             }
             network_event = swarm.select_next_some() => match network_event {
@@ -227,6 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                         &peer_id,
                         &mut swarm,
                         &new_last_block_tx,
+                        &new_record_tx,
                         &blockchain_filepath);
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {

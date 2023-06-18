@@ -7,6 +7,8 @@ use log::{info, error};
 
 use crate::blockchain::{block::Block, chain::Chain};
 
+use super::block::Record;
+
 pub fn get_token_from_block(block: &Block) -> [u8; 32] {
     sha256(&[block.previous_block_hash.as_bytes(),
         // &block.difficulty,
@@ -31,7 +33,8 @@ pub fn get_new_token(new_block_so_far: &Block, nonce: u64) -> [u8; 32] {
 */
 fn prove_the_work(difficulty: &Vec<u8>,
     last_block: &Block,
-    new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>
+    new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>,
+    new_record_rx: &mut mpsc::UnboundedReceiver<Record>,
 ) -> Block {
     // println!("Proving the work... (mining a block)");
     // Generate a random initial nonce so that the work of every node would not just be
@@ -59,17 +62,41 @@ fn prove_the_work(difficulty: &Vec<u8>,
         }
         if nonce % 10000000 == 0 {
             // Check if something came through the channel
+            if let Ok(new_record) = new_record_rx.try_recv() {
+                info!("New record received by the pow thread: \"{:?}\". \
+                    Adding it to (currently) block with idx {}", new_record, new_block.idx);
+                // If something came through the channel, add it to the block
+                new_block.add_record(new_record);
+            }
             if let Ok(new_last_block) = new_last_block_rx.try_recv() {
                 // println!("New last block received: {:?}", new_last_block);
                 // If something came through the channel, discard the current block and start
                 // mining a new block with the data of the new last block
                 nonce = rand::thread_rng().gen::<u64>();
                 new_block.previous_block_hash = new_last_block.hash();
-                new_block.idx = new_last_block.idx + 1;
-                counter = 0;
                 info!("New last block with hash {} received. Discarding the current block and \
                     starting mining a new block with the data of the new last block.",
                     new_block.previous_block_hash);
+
+                new_block.idx = new_last_block.idx + 1;
+                // Compare sets of records in new_block and new_last_block
+                // Discard any records present in the new_last_block from the new_block
+                // Update indices of records which are left in the new_block so that they are
+                // equal to the index of the new_block
+                let mut new_block_records = Vec::new();
+                let mut record_counter = 0;
+                for record in new_block.records.iter() {
+                    if !new_last_block.records.contains(record) {
+                        let mut updated_record = record.clone();
+                        updated_record.idx = (new_block.idx, record_counter);
+                        info!("Refreshed record {:?}->{:?}", record, updated_record);
+                        new_block_records.push(updated_record);
+                        record_counter += 1;
+                    }
+                }
+                new_block.records = new_block_records;
+
+                counter = 0;
                 continue;
             }
             println!("Mining... Current nonce: {}.", nonce);
@@ -94,6 +121,7 @@ fn prove_the_work(difficulty: &Vec<u8>,
  */
 pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>,
+    new_record_rx: &mut mpsc::UnboundedReceiver<Record>,
     difficulty: &Vec<u8>,
     blockchain_filepath: &str
 ) {
@@ -115,7 +143,10 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     info!("Miner starting thread ID: {:?}", thread_id);
 
     loop {
-        let mined_block = prove_the_work(&difficulty, &last_block, new_last_block_rx);
+        let mined_block = prove_the_work(&difficulty,
+            &last_block,
+            new_last_block_rx,
+            new_record_rx);
         // println!("New proof of work: {}", new_pow);
         tokio::select! {
             Some(new_last_block) =  new_last_block_rx.recv() => {

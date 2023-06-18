@@ -6,6 +6,7 @@ pub enum Topics {
     Block,
     Chain,
     Hashrate,
+    Record,
     Message
 }
 

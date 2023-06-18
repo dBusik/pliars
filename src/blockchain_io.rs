@@ -19,7 +19,7 @@ use crate::blockchain::{
         listpeers                           - print peers
         init <difficulty> <num sidelinks>   - initialize the blockchain
         listblocks [file]                   - print blocks (whole blockchain), optionally into a file
-        addrecord <data>                    - add record to the last block of the chain
+        rec <data>                          - add record to the last block of the chain
         printblock  <block index>           - display contents of a chosen block
         numberblocks                        - display number of blocks in the chain
         talk <message>                      - send a text message to all other peers (will wave if no message is provided)
@@ -34,7 +34,7 @@ pub fn print_cmd_options() {
         \tinit <difficulty> <num sidelinks> - initialize the blockchain\n\
         \tlistpeers                         - print peers\n\
         \tlistblocks [file]                 - *pretty* print blocks (whole blockchain), optionally into a file\n\
-        \taddrecord <data>                  - add record to the last block of the chain\n\
+        \trec <data>                        - add record to the last block of the chain\n\
         \tprintblock  <block index>         - display contents of a chosen block\n\
         \tnumberblocks                      - display number of blocks in the chain\n\
         \ttalk <message>                    - send a text message to all other peers (will wave if no message is provided)\n\
@@ -44,7 +44,8 @@ pub fn print_cmd_options() {
     );
 }
 
-pub fn process_non_init_cmd(user_input: String,
+// Processing of the user input which does not involve sending new events to other threads or peers
+pub fn process_simple_cmd(user_input: String,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>,
     local_peer_id: &libp2p::PeerId,
     blockchain_file: &str,
@@ -81,23 +82,6 @@ pub fn process_non_init_cmd(user_input: String,
                 println!("Cannot load blockchain from file");
             }
         },
-        // Some("addrecord") => {
-        //     println!("addrecord received");
-        //     let mut blockchain = blockchain::chain::Chain::new();
-        //     blockchain.load_from_file("blockchain.json");
-        //     let mut blockchain = blockchain.get_chain();
-        //     let mut block = blockchain.pop().expect("can pop block");
-        //     let mut data = String::new();
-        //     for word in user_input {
-        //         data.push_str(word);
-        //         data.push(' ');
-        //     }
-        //     data.pop();
-        //     block.add_record(data);
-        //     blockchain.push(block);
-        //     let blockchain = blockchain::chain::Chain::from_vec(blockchain);
-        //     blockchain.save_to_file("blockchain.json");
-        // },
         Some("printblock") => {
             println!("printblock received");
             let block_index = if let Some(val) = user_input.next() {

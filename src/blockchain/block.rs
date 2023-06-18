@@ -5,11 +5,23 @@ use openssl::{sha::sha256, base64};
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Record {
     // Number of the record within the block
-    pub idx: u64,
+    pub idx: (u64, u64),
     // UTC timestamp
     pub timestamp: u64,
     // Content of the record
     pub data: String,
+    pub author_peer_id: String,
+}
+
+impl Record {
+    pub fn new(data: String, author_peer_id: String) -> Record {
+        Record {
+            idx: (0, 0),
+            timestamp: Utc::now().timestamp() as u64,
+            data,
+            author_peer_id,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -71,6 +83,36 @@ impl Block {
         let data = serde_json::json!(self);
         let hash_bytes = sha256(&data.to_string().as_bytes());
         base64::encode_block(hash_bytes.as_ref())
+    }
+
+    #[allow(dead_code)]
+    pub fn add_record_by_data(&mut self, data: String, author_peer_id: String) {
+        let last_record = self.records.last();
+        let idx = if let Some(last_record) = last_record {
+            (self.idx, last_record.idx.1 + 1)
+        } else {
+            (self.idx, 1)
+        };
+
+        let new_rec = Record {
+            idx,
+            timestamp: Utc::now().timestamp() as u64,
+            data,
+            author_peer_id,
+        };
+
+        self.records.push(new_rec);
+    }
+
+    pub fn add_record(&mut self, mut record: Record) {
+        let last_record = self.records.last();
+        let idx = if let Some(last_record) = last_record {
+            (self.idx, last_record.idx.1 + 1)
+        } else {
+            (self.idx, 1)
+        };
+        record.idx = idx;
+        self.records.push(record);
     }
 }
 

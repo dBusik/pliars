@@ -1,6 +1,6 @@
 use crate::blockchain::{
     chain::{Chain, ChainType, ChainChoice, find_longest_chain, NUM_SIDELINKS},
-    block::Block,
+    block::{Block, Record},
 };
 use crate::BlockchainBehaviour;
 use super::event::{NetworkEvent, CHAIN_INITIALIZATION_DONE};
@@ -201,10 +201,11 @@ pub fn handle_incoming_network_event(event_data: &String,
     received_from_peer_id: &libp2p::PeerId,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>,
     new_last_block_tx: &mpsc::UnboundedSender<Block>,
+    new_record_tx: &mpsc::UnboundedSender<Record>,
     local_chain_file: &str,
 ) {
     let event = NetworkEvent::from_string(event_data);
-    info!("Received event: {:?}", event.variant_name());
+    info!("Received event: {:?}", event.variant_core_data());
     match event {
         NetworkEvent::InitUsingChain(remote_chain) => {
             if unsafe { !CHAIN_INITIALIZATION_DONE } {
@@ -246,6 +247,13 @@ pub fn handle_incoming_network_event(event_data: &String,
                     asked_peer_id: received_from_peer_id.to_string(),
                 };
                 event.send(swarm);
+            }
+        }
+        NetworkEvent::NewRecord(data) => {
+            if let Err(e) = new_record_tx.send(data) {
+                error!("Error sending new record for mining via channel, {}", e);
+            } else {
+                info!("Sent new record for mining via channel");
             }
         }
         NetworkEvent::RemoteChainRequest { asked_peer_id } => {

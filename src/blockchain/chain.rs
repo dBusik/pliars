@@ -2,8 +2,7 @@ use crate::blockchain::block::Block;
 use crate::blockchain::pow;
 use openssl::base64;
 use rand::Rng;
-use serde::{Serialize, Deserialize/*, Serializer*/};
-// use serde::ser::SerializeSeq;
+use serde::{Serialize, Deserialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write, BufRead};
 
