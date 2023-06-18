@@ -1,5 +1,5 @@
 use crate::blockchain::{
-    chain::{Chain, ChainType, ChainChoice, find_longest_chain, DIFFICULTY_VALUE, NUM_SIDELINKS},
+    chain::{Chain, ChainType, ChainChoice, find_longest_chain, NUM_SIDELINKS},
     block::Block,
 };
 use crate::BlockchainBehaviour;
@@ -163,11 +163,8 @@ fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
             // TODO: calculate my hashrate and new difficulty and propagate it to other peers?
             println!("Received remote chain from {} and saved it to file",
                 received_from_peer_id.to_string());
-            let difficulty_from_remote = remote_chain.difficulty.clone();
             unsafe {
                 CHAIN_INITIALIZATION_DONE = true;
-                DIFFICULTY_VALUE = difficulty_from_remote;
-                println!("Difficulty set to {:?}", DIFFICULTY_VALUE);
             }
             new_last_block_tx.send(remote_chain
                 .get_last_block()

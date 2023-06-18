@@ -107,8 +107,8 @@ pub fn process_non_init_cmd(user_input: String,
                 println!("No block index provided");
                 return;
             };
-            let block = if let Ok(block) = Chain::load_block_from_file(
-                block_index,
+            let block = if let Some(block) = Chain::load_block_from_file(
+                block_index as u64,
                 blockchain_file)
             {
                 block

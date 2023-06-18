@@ -1,6 +1,6 @@
 use crate::blockchain::block::Block;
 use crate::blockchain::pow;
-use openssl::{sha::sha256, base64};
+use openssl::base64;
 use rand::Rng;
 use serde::{Serialize, Deserialize/*, Serializer*/};
 // use serde::ser::SerializeSeq;
@@ -15,9 +15,6 @@ pub const DEFAULT_NUM_OF_SIDELINKS: usize = 5;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Chain {
     pub blocks: Vec<Block>,
-    // Abstract difficulty value of mining a block. Proof of work is used to find a nonce
-    // such that the hash of (data||nonce) is less than 2^hash_output_length/difficulty.
-    pub difficulty: Vec<u8>,
     // Parameter determining the number of hashes of previous blocks to be included in the
     // block. The number of hashes is defined by the network. If the idx of the block is
     // less than the number of hashes defined by the network, the block contains all the
@@ -44,6 +41,12 @@ pub enum ChainValidationResult {
     FileError,
     ChainError,
     ChainOk,
+}
+
+#[derive(Debug)]
+enum BlockValidationSource {
+    File,
+    Chain,
 }
 
 // Mechanism for choosing the longest chain
@@ -111,10 +114,9 @@ pub fn find_longest_chain(local_chain: &Chain, remote_chain: &Chain) -> ChainCho
 }
 
 impl Chain {
-    pub fn new(difficulty: Vec<u8>, num_side_links: usize) -> Chain {
+    pub fn new(num_side_links: usize) -> Chain {
         Chain {
             blocks: Vec::new(),
-            difficulty,
             num_side_links,
         }
     }
@@ -130,7 +132,6 @@ impl Chain {
         Ok(Chain {
             blocks,
             // TODO: determine how to store difficulty and num_side_links in the file
-            difficulty: unsafe { DIFFICULTY_VALUE.clone() },
             num_side_links: unsafe { NUM_SIDELINKS },
         })
     }
@@ -172,20 +173,36 @@ impl Chain {
         }
     }
 
-    pub fn load_block_from_file(block_idx: usize, file_name: &str) -> Result<Block, Box<dyn std::error::Error>> {
+    pub fn load_block_from_file(block_idx: u64, file_name: &str) -> Option<Block> {
         // TODO: we assume that the file is not corrupted and that, for simplicity, every
         // block is on separate line. So to get ith block we simply read the ith line.
-        let file = File::open(file_name)?;
+        let file = if let Ok(file) = File::open(file_name) {
+            file
+        } else {
+            println!("[BLOCK VALIDATION] Error while opening the file");
+            return None;
+        };
         let reader = io::BufReader::new(file);
 
         // Read the file until reaching the desired element index
         for (i, line) in reader.lines().enumerate() {
-            if i == block_idx - 1 {
-                return Ok(serde_json::from_str(&line?)?);
+            if i == (block_idx - 1) as usize {
+                if let Ok(line) = line {
+                    if let Ok(block) = serde_json::from_str(&line) {
+                        return Some(block);
+                    } else {
+                        println!("[BLOCK VALIDATION] Error while parsing the block");
+                        return None;
+                    }
+                } else {
+                    println!("[BLOCK VALIDATION] Error while reading the file");
+                    return None;
+                }
             }
         }
 
-        Err("Error while reading the file".into())
+        println!("[BLOCK VALIDATION] Unable to find the block with ID {}", block_idx);
+        None
     }
 
     pub fn get_last_block(&self) -> Option<&Block> {
@@ -203,7 +220,10 @@ impl Chain {
         let mut last_block = None;
 
         if blockchain_length > 0 {
-            last_block = if let Ok(block) = Chain::load_block_from_file(blockchain_length, file_name) {
+            last_block = if let Some(block) = Chain::load_block_from_file(
+                blockchain_length as u64,
+                file_name)
+            {
                 Some(block)
             } else {
                 None
@@ -305,125 +325,6 @@ impl Chain {
         }
     }
 
-    // TODO: next two functions are basically identical, but one takes the chain as an argument
-    // and the other one takes the file path. Find a way to combine them.
-    pub fn validate_block_using_file(block: &Block, blockchain_filepath: &str) -> bool {
-        // Check if the block is the genesis block
-        if block.idx == 1 {
-            if *block != Block::genesis() {
-                println!("Verification of the genesis block failed. \
-                    Invalid data stored in the genesis block.");
-                println!("Expected: {:?}\nActual: {:?}", Block::genesis(), block);
-                return false;
-            }
-            return true;
-        }
-        let last_confirmed_block =
-            if let Some(block) = Chain::get_last_block_from_file(blockchain_filepath) {
-                block
-            } else {
-                println!("Was unable to get the last block of the chain from file. \
-                    Verification of block with ID {} failed.", block.idx);
-                return false;
-            };
-
-        // Check the correctness of ID of the block
-        if block.idx != last_confirmed_block.idx + 1 {
-            println!("Verification of block with ID {}. \
-                Invalid ID of the block; should be: {}",
-                block.idx, last_confirmed_block.idx + 1);
-            return false;
-        }
-
-        // Check if the block is the next block in the chain
-        let last_block_hash = last_confirmed_block.hash();
-        if block.previous_hash != last_block_hash {
-            println!("Verification of block with ID {}. \
-                Invalid hash of the previous block: stored: {:?}, actual hash: {:?}",
-                block.idx, block.previous_hash, last_block_hash);
-            return false;
-        }
-
-        // Check the proof of work
-        let hash_result = pow::get_new_token(
-            block.previous_hash.clone(),
-            block.pow.parse::<u64>().unwrap().clone());
-        let token = hash_result.as_slice();
-        println!("block.pow: {:?}", block.pow);
-        println!("block.previous_hash: {:?}", block.previous_hash);
-        println!("token: {:?}", token);
-        // TODO: using the static value for now since the difficulty isn't rea;;y calculated
-        if token.cmp(unsafe { DIFFICULTY_VALUE.as_slice() }) != std::cmp::Ordering::Less {
-            println!("Verification of block with ID {}. \
-                Invalid proof of work: {:?} >= {:?}",
-                block.idx, token, unsafe { DIFFICULTY_VALUE.as_slice() });
-            return false;
-        }
-
-        // TODO: Check the number of hashes of previous blocks?
-
-        true
-    }
-    
-    fn validate_block(&self, block: &Block) -> bool {
-        // Check if the block is the genesis block
-        if block.idx == 1 {
-            if *block != Block::genesis() {
-                println!("Verification of the genesis block failed. \
-                    Invalid data stored in the genesis block.");
-                println!("Expected: {:?}\nActual: {:?}", Block::genesis(), block);
-                return false;
-            }
-            return true;
-        }
-
-        let prev_block =
-            if let Some(previous_block) = self.blocks.get(block.idx as usize - 2) {
-                previous_block
-            } else {
-                println!("Verification of block with ID {} failed.\
-                    Couldn't get the previous block.", block.idx);
-                return false;
-            };
-
-        // Check the correctness of ID of the block
-        if block.idx != prev_block.idx + 1 {
-            println!("Verification of block with ID {}. \
-                Invalid ID of the block; should be: {}",
-                block.idx, prev_block.idx + 1);
-            return false;
-        }
-
-        // Check if the block is the next block in the chain
-        let prev_block_hash = prev_block.hash();
-        if block.previous_hash != prev_block_hash {
-            println!("Verification of block with ID {}. \
-                Invalid hash of the previous block: stored: {:?}, actual hash: {:?}",
-                block.idx, block.previous_hash, prev_block_hash);
-            return false;
-        }
-
-        // Check the proof of work
-        let hash_result = pow::get_new_token(
-            block.previous_hash.clone(),
-            block.pow.parse::<u64>().unwrap().clone());
-        let token = hash_result.as_slice();
-        println!("block.pow: {:?}", block.pow);
-        println!("block.previous_hash: {:?}", block.previous_hash);
-        println!("token: {:?}", token);
-        // TODO: using the static value for now since the difficulty isn't rea;;y calculated
-        if token.cmp(unsafe { DIFFICULTY_VALUE.as_slice() }) != std::cmp::Ordering::Less {
-            println!("Verification of block with ID {}. \
-                Invalid proof of work: {:?} >= {:?}",
-                block.idx, token, unsafe { DIFFICULTY_VALUE.as_slice() });
-            return false;
-        }
-
-        // TODO: Check the number of hashes of previous blocks?
-
-        true
-    }
-
     pub fn validate_chain(&self) -> bool {
         // Check if the chain is empty
         if self.blocks.is_empty() {
@@ -449,5 +350,97 @@ impl Chain {
         }
 
         true
+    }
+
+    // difficulty: unsafe { DIFFICULTY_VALUE.clone() },
+
+    fn validate_block_core(block: &Block,
+        blockchain_filepath: Option<&str>,
+        chain: Option<&Chain>,
+        source: BlockValidationSource,
+    ) -> bool
+    {
+        // Check if the block is the genesis block
+        if block.idx == 1 {
+            if *block != Block::genesis() {
+                println!("Verification of the genesis block failed. \
+                    Invalid data stored in the genesis block.");
+                println!("Expected: {:?}\nActual: {:?}", Block::genesis(), block);
+                return false;
+            }
+            return true;
+        }
+
+        let previous_block = match source {
+            BlockValidationSource::File => {
+                let block_from_file = Chain::load_block_from_file(
+                    block.idx - 1,
+                    blockchain_filepath.unwrap());
+                block_from_file
+            }
+            BlockValidationSource::Chain => {
+                if let Some(block) = chain.unwrap().blocks.get(block.idx as usize - 2) {
+                    Some((*block).clone())
+                } else {
+                    None
+                }
+            }
+        };
+
+        if let Some(previous_block) = previous_block {
+            // Check the correctness of ID of the block
+            if block.idx != previous_block.idx + 1 {
+                println!("Verification of block with ID {}. \
+                    Invalid ID of the block; should be: {}",
+                    block.idx, previous_block.idx + 1);
+                return false;
+            }
+
+            // Check if the block is the next block in the chain
+            let previous_block_hash = previous_block.hash();
+            if block.previous_block_hash != previous_block_hash {
+                println!("Verification of block with ID {}. \
+                    Invalid hash of the previous block: stored: {:?}, actual hash: {:?}",
+                    block.idx, block.previous_block_hash, previous_block_hash);
+                return false;
+            }
+
+            // Check the proof of work
+            let hash_result = pow::get_token_from_block(&block);
+            let token = hash_result.as_slice();
+            // println!("block.pow: {:?}", block.pow);
+            // println!("block.previous_hash: {:?}", block.previous_block_hash);
+            // println!("token: {:?}", token);
+            // TODO: using the static value for now since the difficulty isn't rea;;y calculated
+            if token.cmp(block.difficulty.as_slice()) != std::cmp::Ordering::Less {
+                println!("Verification of block with ID {}. \
+                    Invalid proof of work: {:?} >= {:?}",
+                    block.idx, token, unsafe { DIFFICULTY_VALUE.as_slice() });
+                return false;
+            }
+
+            // TODO: Check the number of hashes of previous blocks?
+
+        } else {
+            println!("Was unable to get the last block of the chain from {:?}. \
+                Verification of block with ID {} failed.", source, block.idx);
+            return false;
+        }
+
+        true
+    }
+
+    pub fn validate_block_using_file(block: &Block, blockchain_filepath: &str) -> bool {
+        Chain::validate_block_core(block,
+            Some(blockchain_filepath),
+            None,
+            BlockValidationSource::File)
+    }
+    
+    fn validate_block(&self, block: &Block) -> bool {
+        Chain::validate_block_core(block,
+            None,
+            Some(self),
+            BlockValidationSource::Chain)
     }
 }

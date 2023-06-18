@@ -80,12 +80,19 @@ mod tests {
     fn test_hash_value() {
         use crate::blockchain::pow;
 
-        let data = "ZQT2TydHf3ItiUh4Ic8B7zJo7RHY2My22D1zsBFOuss=".to_string();
-        let nonce: u64 = 16527016680411926407;
-        let difficulty =  [0, 0, 0, 45, 79, 21, 53, 19, 64, 144, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let block = crate::blockchain::block::Block::new(
+            1,
+            "mDgKLzrjHxk/fpBrKby9puNvbVMVunf44ns3uj3d9UY=".to_string(),
+            Vec::new(),
+            "6339200808718768504".to_string(),
+            Vec::new(),
+            vec![0, 0, 0, 48, 80, 236, 231, 14, 175, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
 
-        let hash = pow::get_new_token(data, nonce.to_string().parse::<u64>().unwrap());
+        let hash = pow::get_token_from_block(&block);
 
-        assert!(hash.as_ref() < difficulty.as_ref());
+        // Assert that hash of the block above is smaller than difficulty in it and print values of the hash and of difficulty
+        println!("hash: {:?}\ndifficulty: {:?}", hash, block.difficulty);
+        assert!(hash.as_slice() < block.difficulty.as_slice());
     }
 }

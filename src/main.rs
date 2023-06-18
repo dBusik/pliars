@@ -170,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     // TODO: user input difficulty is ignored since the code is not ready for
                     // dynamic difficulty adjustment                    
                     // let difficulty = utils::difficulty_from_secs(difficulty_in_secs, hashrate);
-                    let mut blockchain = Chain::new(difficulty.clone(), num_sidelinks);
+                    let mut blockchain = Chain::new(num_sidelinks);
                     blockchain.init_first_block();
                     // blockchain.add_block(block::Block::genesis());
                     

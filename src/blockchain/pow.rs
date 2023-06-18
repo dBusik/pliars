@@ -6,8 +6,16 @@ use std::thread;
 
 use crate::blockchain::{block::Block, chain::Chain};
 
-pub fn get_new_token(data: String, nonce: u64) -> [u8; 32] {
-    sha256(&[data.as_bytes(), &nonce.to_be_bytes()].concat())
+pub fn get_token_from_block(block: &Block) -> [u8; 32] {
+    sha256(&[block.previous_block_hash.as_bytes(),
+        // &block.difficulty,
+        &(block.pow.parse::<u64>().unwrap().to_be_bytes())].concat())
+}
+
+pub fn get_new_token(new_block_so_far: &Block, nonce: u64) -> [u8; 32] {
+    sha256(&[new_block_so_far.previous_block_hash.as_bytes(),
+        // &new_block_so_far.difficulty,
+        &nonce.to_be_bytes()].concat())
 }
 
 /*
@@ -29,10 +37,18 @@ fn prove_the_work(difficulty: &Vec<u8>,
     // a race of who can find the lowest nonce the fastest.
     let mut nonce = rand::thread_rng().gen::<u64>();
     let mut counter = 0;
-    let mut data = last_block.hash();
+
+    let mut new_block = Block::new(
+        last_block.idx + 1,
+        last_block.hash(),
+        Vec::new(),
+        "".to_string(),
+        Vec::new(),
+        difficulty.clone(),
+    );
 
     loop {
-        let hash_result = get_new_token(data.to_string(), nonce);
+        let hash_result = get_new_token(&new_block, nonce);
         let token = hash_result.as_ref();
         // Compare which one is smaller
         // println!("token: {:?}\ndifficulty: {:?}", token, difficulty);
@@ -47,11 +63,11 @@ fn prove_the_work(difficulty: &Vec<u8>,
                 // If something came through the channel, discard the current block and start
                 // mining a new block with the data of the new last block
                 nonce = rand::thread_rng().gen::<u64>();
-                data = new_last_block.hash();
+                new_block.previous_block_hash = new_last_block.hash();
                 counter = 0;
                 println!("New last block with hash {} received. Discarding the current block and\
                     starting mining a new block with the data of the new last block.",
-                    data);
+                    new_block.previous_block_hash);
                 continue;
             }
             println!("Mining... Current nonce: {}.", nonce);
@@ -61,13 +77,8 @@ fn prove_the_work(difficulty: &Vec<u8>,
     }
 
     // println!("Number of iterations: {}", counter);
-    return Block::new(
-        last_block.idx + 1,
-        last_block.hash(),
-        Vec::new(),
-        nonce.to_string(),
-        Vec::new(),
-    );
+    new_block.pow = nonce.to_string();
+    new_block
 }
 
 /*
@@ -102,9 +113,6 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     println!("Miner starting thread ID: {:?}", thread_id);
 
     loop {
-        // TODO: block will be mined regardless of whether it is valid or not (i.e. if last block
-        // has changed while this block was being mined, this block will be mined anyway, it just
-        // won't be sent back to the main function)
         let mined_block = prove_the_work(&difficulty, &last_block, new_last_block_rx);
         // println!("New proof of work: {}", new_pow);
         tokio::select! {
