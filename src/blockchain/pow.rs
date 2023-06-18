@@ -1,9 +1,15 @@
 use openssl::sha::sha256;
 use rand::Rng;
 use tokio::sync::mpsc;
+use core::panic;
 use std::thread;
 
-use crate::blockchain::block::Block;
+use crate::blockchain::{block::Block, chain::Chain};
+
+pub fn get_new_token(data: String, nonce: u64) -> [u8; 32] {
+    sha256(&[data.as_bytes(), &nonce.to_be_bytes()].concat())
+}
+
 /*
     Proof ow Work
     A PoWd(data) = b with difficulty d over data is a bit string b s.t.
@@ -14,15 +20,19 @@ use crate::blockchain::block::Block;
     (consider the probability that no string of this length produces an output satisfying the
     required property).
 */
-fn prove_the_work(difficulty: &Vec<u8>, data: &str) -> String{
+fn prove_the_work(difficulty: &Vec<u8>,
+    last_block: &Block,
+    new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>
+) -> Block {
     // println!("Proving the work... (mining a block)");
     // Generate a random initial nonce so that the work of every node would not just be
     // a race of who can find the lowest nonce the fastest.
     let mut nonce = rand::thread_rng().gen::<u64>();
     let mut counter = 0;
+    let mut data = last_block.hash();
 
     loop {
-        let hash_result = sha256(&[data.as_bytes(), &nonce.to_be_bytes()].concat());
+        let hash_result = get_new_token(data.to_string(), nonce);
         let token = hash_result.as_ref();
         // Compare which one is smaller
         // println!("token: {:?}\ndifficulty: {:?}", token, difficulty);
@@ -31,14 +41,33 @@ fn prove_the_work(difficulty: &Vec<u8>, data: &str) -> String{
             break;
         }
         if nonce % 10000000 == 0 {
+            // Check if something came through the channel
+            if let Ok(new_last_block) = new_last_block_rx.try_recv() {
+                // println!("New last block received: {:?}", new_last_block);
+                // If something came through the channel, discard the current block and start
+                // mining a new block with the data of the new last block
+                nonce = rand::thread_rng().gen::<u64>();
+                data = new_last_block.hash();
+                counter = 0;
+                println!("New last block with hash {} received. Discarding the current block and\
+                    starting mining a new block with the data of the new last block.",
+                    data);
+                continue;
+            }
             println!("Mining... Current nonce: {}.", nonce);
         }
         nonce += 1;
         counter += 1;
     }
 
-    println!("Number of iterations: {}", counter);
-    nonce.to_string()
+    // println!("Number of iterations: {}", counter);
+    return Block::new(
+        last_block.idx + 1,
+        last_block.hash(),
+        Vec::new(),
+        nonce.to_string(),
+        Vec::new(),
+    );
 }
 
 /*
@@ -53,43 +82,63 @@ fn prove_the_work(difficulty: &Vec<u8>, data: &str) -> String{
 pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>,
     difficulty: &Vec<u8>,
-    last_block: Block
+    blockchain_filepath: &str
 ) {
-    // TODO: this should use sidelinks (i.e. generate random indices of blocks using this hash
-    // and then calculate their hashes and concatenate them with this hash and use it as data)
-    let main_hash = last_block.hash();
-    let mut mining_data = main_hash.clone();
+    let mut last_block = if let Some(block) =
+        Chain::get_last_block_from_file(blockchain_filepath)
+    {
+        block
+    } else {
+        // Lock the thread and wait on the channel
+        println!("[MINER]: Waiting for chain initialization...\
+            (either get somebody's chain or use the init command)");
+        new_last_block_rx.recv().await.unwrap()
+    };
 
     // Mining task, create a copy of the difficulty vector
     let difficulty = difficulty.clone();
 
     let thread_id = thread::current().id();
-    println!("outer miner thread ID: {:?}", thread_id);
+    println!("Miner starting thread ID: {:?}", thread_id);
 
     loop {
         // TODO: block will be mined regardless of whether it is valid or not (i.e. if last block
         // has changed while this block was being mined, this block will be mined anyway, it just
         // won't be sent back to the main function)
-        let new_pow = prove_the_work(&difficulty, &mining_data);
+        let mined_block = prove_the_work(&difficulty, &last_block, new_last_block_rx);
         // println!("New proof of work: {}", new_pow);
         tokio::select! {
             Some(new_last_block) =  new_last_block_rx.recv() => {
                 // If we mined a block but somebody mined it faster than our previous block is not
                 // valid anymore and we need to mine a new block with new data
-                mining_data = new_last_block.hash();
+                last_block = new_last_block;
             }
             _ = tokio::task::yield_now() => {
-                println!("Sending new block with such proof of work via channel: {}", new_pow);
-                let mined_block = Block::new(last_block.idx + 1,
-                    // TODO: second computation of the hash of the last block
-                    last_block.hash(),
-                    Vec::new(),
-                    new_pow,
-                    Vec::new());
+                println!("Sending new block with such proof of work via channel: {}", mined_block.pow);
+                // TODO: this should use sidelinks (i.e. generate random indices of blocks using this hash
+                // and then calculate their hashes and concatenate them with this hash and use it as data)
 
-                if let Err(e) = new_mined_block_tx.send(mined_block) {
-                    eprintln!("error sending new mined block via channel, {}", e);
-                };
+                // println!("Old block: {:?}", last_block);
+                // println!("New block: {:?}", mined_block);
+                let new_last_block = mined_block.clone();
+                if let Err(e) = Chain::append_block_to_file(&mined_block, blockchain_filepath) {
+                    println!("Error appending block to file. Block will be discarded: {}.", e);
+                } else {
+                    println!("Block appended to file.");
+                    if let Err(e) = new_mined_block_tx.send(mined_block) {
+                        println!("Error sending new mined block via channel, {}", e);
+                        if let Err(e) = Chain::remove_last_block_from_file(blockchain_filepath) {
+                            println!("Tried to remove last block from the file due to
+                                usuccessful broadcast of the new block but error occured: {}", e);
+                        } else {
+                            println!("Last block removed from file since broadcast of the block\
+                                failed.");
+                        }
+                    } else {
+                        println!("Sent new mined block via channel");
+                        last_block = new_last_block;
+                    }
+                }
             }
             // _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
             //     println!("Mining...");

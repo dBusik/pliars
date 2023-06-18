@@ -1,9 +1,10 @@
 use crate::blockchain::{
-    chain::{Chain, ChainType, ChainChoice, find_longest_chain},
+    chain::{Chain, ChainType, ChainChoice, find_longest_chain, DIFFICULTY_VALUE, NUM_SIDELINKS},
+    block::Block,
 };
 use crate::BlockchainBehaviour;
-use super::CHAIN_INITIALIZED;
-use super::event::{NetworkEvent, send_network_event};
+use super::event::{NetworkEvent, CHAIN_INITIALIZATION_DONE};
+use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq)]
 enum ChainAndFileValidity {
@@ -45,7 +46,7 @@ fn choose_chain(remote_chain: Chain,
     // Compare the received chain with the local chain and choose the one with
     // the highest difficulty
     let mut winner_chain_choice: Option<ChainChoice> = None;
-    if unsafe { CHAIN_INITIALIZED } {
+    if unsafe { CHAIN_INITIALIZATION_DONE } {
         if let Ok(local_chain) = Chain::load_from_file(blockchain_file) {
             winner_chain_choice = Some(find_longest_chain(&local_chain, &remote_chain));
         }
@@ -93,6 +94,8 @@ fn choose_chain(remote_chain: Chain,
 }
 
 fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
+    local_chain_file: &str,
+    new_last_block_tx: &mpsc::UnboundedSender<Block>,
     chain_received_from_peer_id: &libp2p::PeerId,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>
 ) {
@@ -106,7 +109,20 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
     let chosen_chain = chosen_chain.unwrap();
     match chosen_chain.chosen_chain_type {
         ChainType::NoChain => {
-            println!("No chain won.");
+            println!("Both chains were invalid.");
+            // TODO: myabe do something about this? Like loading only genesis block into
+            // the file
+            // let mut blank_chain = unsafe { Chain::new(
+            //     DIFFICULTY_VALUE.clone(),
+            //     NUM_SIDELINKS,
+            // ) };
+            // blank_chain.add_block(Block::genesis());
+            // blank_chain.save_blockchain_to_file(local_chain_file).unwrap();
+            // let event = NetworkEvent::RemoteChainResponse{
+            //     chain_from_sender: blank_chain,
+            //     chain_receiver: chain_received_from_peer_id.to_string(),
+            // };
+            // event.send(swarm);
         },
         ChainType::Local => {
             println!("Local chain won.");
@@ -115,13 +131,19 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
                     chain_from_sender: local_chain,
                     chain_receiver: chain_received_from_peer_id.to_string(),
                 };
-                send_network_event(event, swarm);
+                event.send(swarm);
             }
         },
         ChainType::Both => {
             println!("Chains were equal.");
         },
         ChainType::Remote => {
+            new_last_block_tx.send(chosen_chain.chosen_chain
+                .unwrap()
+                .get_last_block()
+                .unwrap()
+                .clone()
+            ).unwrap();
             println!("Remote chain from peer {} won.",
                 chain_received_from_peer_id.to_string());
         },
@@ -130,6 +152,7 @@ fn handle_chain_choice_result(chosen_chain: Option<ChainChoice>,
 
 fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
     local_chain_file: &str,
+    new_last_block_tx: &mpsc::UnboundedSender<Block>,
     received_from_peer_id: &libp2p::PeerId,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>
 ) {
@@ -137,19 +160,27 @@ fn handle_remote_chain_if_local_uninitialized(remote_chain: Chain,
         local_chain_file);
     match remote_chain_save_result {
         ChainAndFileValidity::ValidChainAndFile => {
-            // TODO: calculate my hasrate and new difficulty and propagate it to other peers?
+            // TODO: calculate my hashrate and new difficulty and propagate it to other peers?
             println!("Received remote chain from {} and saved it to file",
                 received_from_peer_id.to_string());
-            unsafe { CHAIN_INITIALIZED = true; }
+            let difficulty_from_remote = remote_chain.difficulty.clone();
+            unsafe {
+                CHAIN_INITIALIZATION_DONE = true;
+                DIFFICULTY_VALUE = difficulty_from_remote;
+                println!("Difficulty set to {:?}", DIFFICULTY_VALUE);
+            }
+            new_last_block_tx.send(remote_chain
+                .get_last_block()
+                .unwrap()
+                .clone()
+            ).unwrap();
         },
         ChainAndFileValidity::InvalidChain => {
             // Ask the other peer for the chain again
-            println!("Received remote chain from {} but it is invalid.\
-                Ignoring it", received_from_peer_id.to_string());
-            let event = NetworkEvent::RemoteChainRequest {
-                asked_peer_id: received_from_peer_id.to_string(),
-            };
-            send_network_event(event, swarm);
+            println!("Received remote chain from {} but it is invalid. \
+                Ignoring it.", received_from_peer_id.to_string());
+            // TODO: alternatively look for somebody else with the chain?
+            // (But they would have sent the block anyway)
             return;
         },
         ChainAndFileValidity::InvalidFile => {
@@ -169,15 +200,18 @@ pub fn handle_incoming_network_event(event_data: &String,
     local_peer_id: &libp2p::PeerId,
     received_from_peer_id: &libp2p::PeerId,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>,
+    new_last_block_tx: &mpsc::UnboundedSender<Block>,
     local_chain_file: &str,
 ) {
     let event = NetworkEvent::from_string(event_data);
+    println!("Received event: {:?}", event);
     match event {
         NetworkEvent::InitUsingChain(remote_chain) => {
-            if unsafe { !CHAIN_INITIALIZED } {
+            if unsafe { !CHAIN_INITIALIZATION_DONE } {
                 // TODO: calculate my hashrate and new difficulty and propagate it to other peers?
                 handle_remote_chain_if_local_uninitialized(remote_chain,
                     local_chain_file,
+                    &new_last_block_tx,
                     received_from_peer_id,
                     swarm);
             } else {
@@ -185,24 +219,46 @@ pub fn handle_incoming_network_event(event_data: &String,
                     remote_chain,
                     local_chain_file);
                 
-                handle_chain_choice_result(chosen_chain, received_from_peer_id, swarm);
+                handle_chain_choice_result(chosen_chain,
+                    &local_chain_file,
+                    &new_last_block_tx,
+                    received_from_peer_id,
+                    swarm);
             }
         }
         NetworkEvent::BlockProposal(block) => {
-            println!("Received BlockProposal event: {:?}", block);
+            // Validate the block, if valid add it to the chain and send to the mining task
+            // since now it should use this block as the last block in the chain
+            if Chain::validate_block_using_file(&block, local_chain_file) {
+                println!("Block is valid");
+                let block_copy = block.clone();
+                if let Err(e) = new_last_block_tx.send(block_copy) {
+                    println!("error sending new mined block via channel, {}", e);
+                } else {
+                    println!("Sent new mined block via channel");
+                    if let Err(e) = Chain::append_block_to_file(&block, local_chain_file) {
+                        println!("Error while appending block to file: {}", e);
+                    }
+                }
+            } else {
+                println!("Block validation failed, asking the peer for the whole chain.");
+                let event = NetworkEvent::RemoteChainRequest {
+                    asked_peer_id: received_from_peer_id.to_string(),
+                };
+                event.send(swarm);
+            }
         }
         NetworkEvent::RemoteChainRequest { asked_peer_id } => {
-            println!("Received RemoteChainRequest event: {:?}", asked_peer_id);
             if asked_peer_id == local_peer_id.to_string() {
                 println!("Sending local chain to {}", asked_peer_id);
                 // Check if chain is ok and ignore if not
                 if let Ok(local_chain) = Chain::load_from_file(local_chain_file) {
                     let event = NetworkEvent::RemoteChainResponse {
                         chain_from_sender: local_chain,
-                        chain_receiver: local_peer_id.to_string(),
+                        chain_receiver: received_from_peer_id.to_string(),
                     };
-                    send_network_event(event, swarm);
-                } else {
+                    event.send(swarm);
+            } else {
                     println!("Chain is not valid. Ignoring RemoteChainRequest event from {}",
                         received_from_peer_id.to_string());
                 };
@@ -211,9 +267,10 @@ pub fn handle_incoming_network_event(event_data: &String,
         NetworkEvent::RemoteChainResponse { chain_from_sender: remote_chain, chain_receiver } => {
             // Same as InitUsingChain event but check whether the chain was addressed to us
             if chain_receiver == local_peer_id.to_string() {
-                if unsafe { !CHAIN_INITIALIZED } {
+                if unsafe { !CHAIN_INITIALIZATION_DONE } {
                     handle_remote_chain_if_local_uninitialized(remote_chain,
                         local_chain_file,
+                        &new_last_block_tx,
                         received_from_peer_id,
                         swarm);
                 } else {
@@ -223,6 +280,8 @@ pub fn handle_incoming_network_event(event_data: &String,
                         local_chain_file);
                     
                     handle_chain_choice_result(chosen_chain,
+                        &local_chain_file,
+                    &new_last_block_tx,
                         received_from_peer_id,
                         swarm);
                 }

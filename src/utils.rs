@@ -26,6 +26,7 @@ pub fn difficulty_from_secs(difficulty_in_secs: f64, hashrate: f64) -> Vec<u8> {
     let difficulty = (2.0f64.powi(256) - 1.0) / (difficulty_in_secs * hashrate);
     let difficulty = rug::Float::with_val(256, difficulty);
     let difficulty = difficulty.trunc().to_integer().unwrap();
+    println!("Difficulty: {:?}", difficulty);
     
     let mut difficulty = difficulty.to_digits::<u8>(rug::integer::Order::MsfBe);
     while difficulty.len() < 32 {
@@ -66,6 +67,25 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_representation() {
+    fn test_block_comparison() {
+        use crate::blockchain::block::Block;
+        
+        let block1 = Block::genesis();
+        let block2 = Block::genesis();
+
+        assert_eq!(block1, block2);
+    }
+
+    #[test]
+    fn test_hash_value() {
+        use crate::blockchain::pow;
+
+        let data = "ZQT2TydHf3ItiUh4Ic8B7zJo7RHY2My22D1zsBFOuss=".to_string();
+        let nonce: u64 = 16527016680411926407;
+        let difficulty =  [0, 0, 0, 45, 79, 21, 53, 19, 64, 144, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        let hash = pow::get_new_token(data, nonce.to_string().parse::<u64>().unwrap());
+
+        assert!(hash.as_ref() < difficulty.as_ref());
     }
 }

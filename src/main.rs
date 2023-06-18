@@ -3,10 +3,13 @@ mod utils;
 mod network;
 mod blockchain_io;
 
-use crate::utils::find_my_hashrate;
-use crate::network::event_handling;
+use crate::network::{event::{NetworkEvent, CHAIN_INITIALIZATION_DONE}, event_handling};
 use crate::network::behaviour::{BlockchainBehaviour, BlockchainBehaviourEvent, Topics};
-use crate::blockchain_io::{process_cmd, print_cmd_options};
+use crate::blockchain_io::{process_non_init_cmd, print_cmd_options};
+use blockchain::{
+    pow,
+    block,
+    chain::{Chain, DIFFICULTY_VALUE, DEFAULT_DIFFICULTY_IN_SECONDS, DEFAULT_NUM_OF_SIDELINKS}};
 
 use libp2p::gossipsub::Behaviour;
 use log::info;
@@ -16,7 +19,6 @@ use libp2p::core::{upgrade};
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{SwarmBuilder, SwarmEvent};
 use libp2p::{identity, Transport, noise, tcp, PeerId, yamux, gossipsub, mdns};
-use rug;
 use std::thread;
 
 #[tokio::main]
@@ -28,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     let blockchain_filepath = format!("./blockchain_storage_{local_peer_id}.json");
 
     info!("Starting the node... PEER ID: {local_peer_id}");
-    info!("[PEER ID {}], My hashrate: {} hashes/s", local_peer_id, find_my_hashrate());
+    info!("[PEER ID {}], My hashrate: {} hashes/s", local_peer_id, utils::find_my_hashrate());
     
     // Set encrypted DNS-enabled TCP transport over yamux multiplexing
     let tcp_transport = tcp::tokio::Transport::default()
@@ -71,28 +73,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     info!("Listening. Network info {:?}", swarm.network_info());
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    // Channels for new mined blocks
-    // let (new_mined_block_tx, mut new_mined_block_rx) = mpsc::unbounded_channel();
+    // // Channels for new mined blocks
+    let (new_mined_block_tx, mut new_mined_block_rx) = mpsc::unbounded_channel();
     // // Channels to inform the miner about new last block of the chain
-    // let (new_last_block_tx, mut new_last_block_rx) = mpsc::unbounded_channel();
+    let (new_last_block_tx, mut new_last_block_rx) = mpsc::unbounded_channel();
     
     // Clear the screen every 10 events
     let mut event_counter = 0;
     print_cmd_options();
 
     // Spawn the block mining task
-    let network_difficulty_secs: f64 = 6.0;
-    let hashrate: f64 = find_my_hashrate() as f64;
-    let difficulty = (2.0f64.powi(256) - 1.0) / (network_difficulty_secs * hashrate);
-    let difficulty = rug::Float::with_val(256, difficulty);
-    let difficulty = difficulty.trunc().to_integer().unwrap();
-    println!("Difficulty: {:?}", difficulty);
-    let mut difficulty = difficulty.to_digits::<u8>(rug::integer::Order::MsfBe);
-    while difficulty.len() < 32 {
-        // Pad the difficulty with zeros if it is shorter that the length of the ouput
-        // of the hash function (which in this case is 256 bits since we use sha256)
-        difficulty.insert(0, 0);
-    }
+    let hashrate: f64 = utils::find_my_hashrate() as f64;
+    let difficulty = utils::difficulty_from_secs(DEFAULT_DIFFICULTY_IN_SECONDS, hashrate);
     println!("Starting the mining task with difficulty: {:?}", difficulty);
     
     // Dispatch the mine_blocks function
@@ -102,9 +94,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         .build()
         .unwrap();
 
-    // runtime.spawn(async move {
-    //     pow::mine_blocks(&new_mined_block_tx, &mut new_last_block_rx, &difficulty, Block::genesis()).await;
-    // });
+    let fpath_copy = blockchain_filepath.clone();
+    let difficulty_copy = difficulty.clone();
+    runtime.spawn(async move {
+        pow::mine_blocks(&new_mined_block_tx,
+            &mut new_last_block_rx,
+            &difficulty_copy,
+            &fpath_copy).await;
+    });
 
     let thread_id = thread::current().id();
     println!("main function thread ID: {:?}", thread_id);
@@ -114,25 +111,95 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         tokio::select! {
             // TODO: create enum and hanlde every case using that enum to avoid huge code chunks
             // executed within select
-            // Some(mined_block) = new_mined_block_rx.recv() => {
-            //     println!("Received mined block: {:?}", mined_block);
-            //     // let pending_event = BlockchainBehaviourEvent::BlockProposal(mined_block);
-            //     // let topic = Topics::Block;
-            //     // if let Err(e) = swarm.behaviour_mut().gossipsub.publish(
-            //     //     gossipsub::IdentTopic::new(topic.to_string()),
-            //     //     serde_json::to_vec(&pending_event).expect("can serialize message"))
-            //     // {
-            //     //     if let libp2p::gossipsub::PublishError::InsufficientPeers = e {
-            //     //         println!("No peers to share event with to :(");
-            //     //     } else {
-            //     //         panic!("Error while publishing message: {:?}", e);
-            //     //     }
-            //     // }
-            // }
+            Some(mined_block) = new_mined_block_rx.recv() => {
+                println!("Received mined block: {:?}", mined_block);
+                let block_proposal = NetworkEvent::BlockProposal(mined_block);
+                block_proposal.send(&mut swarm);
+            }
             cmd_line = stdin.next_line() => {
                 let line = cmd_line.expect("can get line").expect("can read line from stdin");
                 println!("Received user input: {:?}", line);
-                process_cmd(line, &mut swarm, &local_peer_id, blockchain_filepath.as_str());
+                // If line is "init" then process the event here, otherwise use
+                // the process_cmd function
+                if line.starts_with("init") {
+                    println!("init received");
+                    if unsafe { CHAIN_INITIALIZATION_DONE } {
+                        println!("Blockchain exists. Not initializing the blockchain");
+                        // Jump out of the match and continue the loop
+                        continue;
+                    }
+                    // Safe alternative to the above code (not too compelling though)
+                    // if std::path::Path::new(blockchain_file).exists() {
+                    //     println!("Blockchain exists. Not initializing the blockchain");
+                    //     return;
+                    // }
+
+                    let hashrate: f64 = utils::find_my_hashrate() as f64;
+                    println!("My hashrate: {}", hashrate);
+
+                    let mut user_input = line.split_whitespace();
+    
+                    // TODO: user input difficulty is ignored since the code is not ready for
+                    // dynamic difficulty adjustment
+                    // let difficulty_in_secs = if let Some(difficulty) = user_input.next() {
+                    //     let diff_val = difficulty.parse()
+                    //         .expect("can parse difficulty");
+                    //     diff_val
+                    // } else {
+                    //     DEFAULT_DIFFICULTY_IN_SECONDS
+                    // };
+
+                    let num_sidelinks = if let Some(sidelinks_num) = user_input.next() {
+                        let sidel_val = if let Ok(sidel_val) = sidelinks_num.parse::<usize>() {
+                            sidel_val
+                        } else {
+                            DEFAULT_NUM_OF_SIDELINKS
+                        };
+                        sidel_val
+                    } else {
+                        DEFAULT_NUM_OF_SIDELINKS
+                    };
+
+                    // Difficulty should be such that number of seconds to mine a block is equal to
+                    // a value given by the user or DEFAULT_DIFFICULTY_IN_SECONDS if the user did not
+                    // provide any value.
+                    // Since max hash value for sha256 is 2^256-1, we can calculate the difficulty
+                    // number later used for comparison with hashes as
+                    //     2^256-1 / (<difficulty_in_seconds>> * <hashrate of the network>)
+
+                    // TODO: user input difficulty is ignored since the code is not ready for
+                    // dynamic difficulty adjustment                    
+                    // let difficulty = utils::difficulty_from_secs(difficulty_in_secs, hashrate);
+                    let mut blockchain = Chain::new(difficulty.clone(), num_sidelinks);
+                    blockchain.init_first_block();
+                    // blockchain.add_block(block::Block::genesis());
+                    
+                    println!("Saving blockchain to file {}", blockchain_filepath);
+                    if blockchain.save_blockchain_to_file(&blockchain_filepath).is_err() {
+                        println!("Error while saving blockchain to file, cancelling the init event");
+                    }
+
+                    // TODO: user input difficulty is ignored since the code is not ready for
+                    // dynamic difficulty adjustment        
+                    // println!("Trying to send to other peers Init event with difficulty: \
+                    //     {:?}[secs] (or {:?} as u8 vector) and number of sidelinks: {:?}",
+                    //     difficulty_in_secs, difficulty, num_sidelinks);
+
+                    println!("Trying to send to other peers Init event with difficulty: \
+                        {:?}[secs] (or {:?} as u8 vector) and number of sidelinks: {:?}",
+                        DEFAULT_DIFFICULTY_IN_SECONDS, difficulty, num_sidelinks);
+
+                    unsafe {
+                        CHAIN_INITIALIZATION_DONE = true;
+                        DIFFICULTY_VALUE = difficulty.clone();
+                        println!("Difficulty set to {:?}", DIFFICULTY_VALUE);
+                    }
+                    // Send new last block to mining thread
+                    new_last_block_tx.send(blockchain.get_last_block().unwrap().clone()).unwrap();
+                    NetworkEvent::InitUsingChain(blockchain).send(&mut swarm);             
+                } else {
+                    process_non_init_cmd(line, &mut swarm, &local_peer_id, blockchain_filepath.as_str());
+                }
             }
             network_event = swarm.select_next_some() => match network_event {
                 SwarmEvent::Behaviour(BlockchainBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
@@ -158,11 +225,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                 })) => {
                     // Decerialize the message
                     let data = String::from_utf8_lossy(&message.data).to_string();
+                    println!("Received message: {:?}", data);
                     event_handling::handle_incoming_network_event(&data,
                         &local_peer_id,
                         &peer_id,
                         &mut swarm,
-                        blockchain_filepath.as_str());
+                        &new_last_block_tx,
+                        &blockchain_filepath);
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");

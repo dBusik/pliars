@@ -40,7 +40,7 @@ pub fn print_cmd_options() {
     );
 }
 
-pub fn process_cmd(user_input: String,
+pub fn process_non_init_cmd(user_input: String,
     swarm: &mut libp2p::Swarm<BlockchainBehaviour>,
     local_peer_id: &libp2p::PeerId,
     blockchain_file: &str,
@@ -49,30 +49,6 @@ pub fn process_cmd(user_input: String,
     match user_input.next() {
         Some("help") => {
             print_cmd_options();
-        },
-        Some("init") => {
-            println!("init received");
-            let difficulty_secs: Option<f64> = if let Some(difficulty) = user_input.next() {
-                let diff_val = difficulty.parse()
-                    .expect("can parse difficulty");
-                Some(diff_val)
-            } else {
-                None
-            };
-
-            let num_side_links: Option<usize> = if let Some(sidelinks_num) = user_input.next() {
-                let sidel_val = sidelinks_num.parse()
-                    .expect("can parse number of sidelinks");
-                Some(sidel_val)
-            } else {
-                None
-            };
-
-            let event = NetworkEvent::InitFromUserIo {
-                difficulty: difficulty_secs,
-                num_sidelinks:num_side_links
-            };
-            event.send(swarm, blockchain_file);
         },
         Some("listpeers") => {
             println!("listpeers received");
@@ -120,17 +96,35 @@ pub fn process_cmd(user_input: String,
         // },
         Some("printblock") => {
             println!("printblock received");
-            let block_index = user_input.next().expect("can get block index").parse::<usize>().expect("can parse block index");
-            let block = Block::load_block_from_file(
+            let block_index = if let Some(val) = user_input.next() {
+                if let Ok(num) = val.parse::<usize>() {
+                    num
+                } else {
+                    println!("Cannot parse block index");
+                    return;
+                }
+            } else {
+                println!("No block index provided");
+                return;
+            };
+            let block = if let Ok(block) = Chain::load_block_from_file(
                 block_index,
                 blockchain_file)
-            .expect("can load blockchain");
+            {
+                block
+            } else {
+                println!("Cannot load block from file");
+                return;
+            };
             println!("{:#?}", block);
         },
         Some("numberblocks") => {
             println!("numberblocks received");
-            let blockchain_length = Chain::get_blockchain_length(blockchain_file);
-            println!("Number of blocks: {}", blockchain_length);
+            if let Ok(len) = Chain::get_blockchain_length(blockchain_file) {
+                println!("Number of blocks: {}", len);
+            } else {
+                println!("Cannot get lengt of blockchain from file");
+            };
         },
         Some("talk") => {
             println!("talk received");
@@ -140,7 +134,7 @@ pub fn process_cmd(user_input: String,
                 message: message.to_string(),
                 from_peer_id: local_peer_id.to_string(),
             };
-            event.send(swarm, blockchain_file);
+            event.send(swarm);
         },
         Some("exit") => {
             println!("exit received");
