@@ -24,7 +24,6 @@ use log::{error, info, warn};
 
 fn parse_difficulty_and_sidelinks(user_input: &str) -> (f64, usize) {
     let mut user_input = user_input.split_whitespace();
-    info!("user_input: {:?}", user_input);
     let difficulty_in_secs = if let Some(difficulty) = user_input.next() {
         info!("difficulty: {:?}", difficulty);
         let difficulty_str = if let Some(difficulty) = difficulty.strip_prefix("d=") {

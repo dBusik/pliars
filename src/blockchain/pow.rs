@@ -7,7 +7,7 @@ use log::{info, error};
 
 use crate::blockchain::{block::Block, chain::Chain};
 
-use super::block::Record;
+use super::block::{Record, self};
 
 pub fn get_token_from_block(block: &Block) -> [u8; 32] {
     sha256(&[block.previous_block_hash.as_bytes(),
@@ -32,6 +32,7 @@ pub fn get_new_token(new_block_so_far: &Block, nonce: u64) -> [u8; 32] {
     required property).
 */
 fn prove_the_work(difficulty: &Vec<u8>,
+    num_sidelinks: usize,
     last_block: &Block,
     new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>,
     new_record_rx: &mut mpsc::UnboundedReceiver<Record>,
@@ -42,9 +43,16 @@ fn prove_the_work(difficulty: &Vec<u8>,
     let mut nonce = rand::thread_rng().gen::<u64>();
     let mut counter = 0;
 
+    let block_idx = last_block.idx + 1;
+    let num_sidelinks = if num_sidelinks >= block_idx as usize {
+        (block_idx - 2) as usize
+    } else {
+        num_sidelinks
+    };
     let mut new_block = Block::new(
         last_block.idx + 1,
         last_block.hash(),
+        num_sidelinks,
         Vec::new(),
         "".to_string(),
         Vec::new(),
@@ -79,6 +87,12 @@ fn prove_the_work(difficulty: &Vec<u8>,
                     new_block.previous_block_hash);
 
                 new_block.idx = new_last_block.idx + 1;
+                new_block.num_sidelinks = if num_sidelinks >= new_block.idx as usize {
+                    (new_block.idx - 2) as usize
+                } else {
+                    num_sidelinks
+                };
+
                 // Compare sets of records in new_block and new_last_block
                 // Discard any records present in the new_last_block from the new_block
                 // Update indices of records which are left in the new_block so that they are
@@ -154,7 +168,8 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     info!("Miner starting thread ID: {:?}", thread_id);
 
     loop {
-        let mined_block = prove_the_work(&difficulty,
+        let mut mined_block = prove_the_work(&difficulty,
+            num_sidelinks,
             &last_block,
             new_last_block_rx,
             new_record_rx);
@@ -166,12 +181,23 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
                 last_block = new_last_block;
             }
             _ = tokio::task::yield_now() => {
-                info!("Sending new block with such proof of work via channel: {}", mined_block.pow);
-                // TODO: this should use sidelinks (i.e. generate random indices of blocks using this hash
-                // and then calculate their hashes and concatenate them with this hash and use it as data)
+                let sidelink_indices = mined_block.derive_sidelink_indices();
+                info!("Sidelink indices: {:?}", sidelink_indices);
+                if let Some(sidelinked_blocks) = Chain::get_blocks_by_indices_from_file(sidelink_indices,
+                    blockchain_filepath)
+                {
+                    sidelinked_blocks.iter().for_each(|block| {
+                        // println!("Sidelinked block: {:?}", block);
+                        mined_block.add_sidelink(block.hash()); 
+                    });
+                } else {
+                    error!("Cannot get sidelinked blocks from file");
+                    continue;
+                };
 
                 // println!("Old block: {:?}", last_block);
                 // println!("New block: {:?}", mined_block);
+                info!("Sending new block with such proof of work via channel: {}", mined_block.pow);
                 let new_last_block = mined_block.clone();
                 if let Err(e) = Chain::append_block_to_file(&mined_block, blockchain_filepath) {
                     error!("Error appending block to file. Block will be discarded: {}.", e);

@@ -497,6 +497,54 @@ impl Chain {
                 return false;
             }
 
+            let validation_sidelinks = block.derive_sidelink_indices();
+            // Check if the number of hashes of previous blocks is correct
+            if validation_sidelinks.len() != block.num_sidelinks {
+                println!("Verification of block with ID {}. \
+                    Invalid number of hashes of previous blocks: stored: {}, actual: {}",
+                    block.idx, block.num_sidelinks, validation_sidelinks.len());
+                return false;
+            }
+
+            // Check if the hashes of previous blocks are correct
+            let sidelinked_blocks = match source {
+                BlockValidationSource::File => {
+                    Chain::get_blocks_by_indices_from_file(
+                        validation_sidelinks,
+                        blockchain_filepath.unwrap())
+                }
+                BlockValidationSource::Chain => {
+                    let mut blocks = Vec::new();
+                    for idx in validation_sidelinks {
+                        if let Some(block) = chain.unwrap().blocks.get(idx as usize - 1) {
+                            blocks.push((*block).clone());
+                        } else {
+                            println!("Was unable to get the block with ID {} from the chain. \
+                                Verification of block with ID {} failed.", idx, block.idx);
+                            return false;
+                        }
+                    }
+                    Some(blocks)
+                }
+            };
+
+            if let Some(sidelinked_blocks) = sidelinked_blocks {
+                if sidelinked_blocks.len() > 0 {
+                    for (i, block) in sidelinked_blocks.iter().enumerate() {
+                        if block.hash() != block.validation_sidelinks[i] {
+                            println!("Verification of block with ID {}. \
+                                Invalid hash of the block with ID {}",
+                                block.idx, block.idx);
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                println!("Was unable to get the sidelinked blocks from {:?}. \
+                    Verification of block with ID {} failed.", source, block.idx);
+                return false;
+            }
+
             // Check the proof of work
             let hash_result = pow::get_token_from_block(&block);
             let token = hash_result.as_slice();
@@ -510,9 +558,6 @@ impl Chain {
                     block.idx, token, block.difficulty.as_slice());
                 return false;
             }
-
-            // TODO: Check the number of hashes of previous blocks?
-
         } else {
             println!("Was unable to get the last block of the chain from {:?}. \
                 Verification of block with ID {} failed.", source, block.idx);

@@ -1,3 +1,5 @@
+use std::num;
+
 use serde::{Serialize, Deserialize};
 use chrono::prelude::*;
 use openssl::{sha::sha256, base64};
@@ -34,6 +36,7 @@ pub struct Block {
     // the block contains all the hashes of the previous blocks and the rest of the
     // hashes are empty.
     pub validation_sidelinks: Vec<String>,
+    pub num_sidelinks: usize,
     // Proof of Work
     pub pow: String,
     // UTC timestamp
@@ -51,6 +54,7 @@ impl Block {
         Block {
             idx: 1,
             previous_block_hash: "0".repeat(32),
+            num_sidelinks: 0,
             validation_sidelinks: Vec::new(),
             pow: "".to_string(),
             timestamp: 0,
@@ -60,8 +64,9 @@ impl Block {
     }
 
     pub fn new(idx: u64,
-        previous_hash: String,
-        validation_hashes: Vec<String>,
+        previous_block_hash: String,
+        num_sidelinks: usize,
+        validation_sidelinks: Vec<String>,
         pow: String,
         records: Vec<Record>,
         difficulty: Vec<u8>,
@@ -69,8 +74,9 @@ impl Block {
     {
         Block {
             idx,
-            previous_block_hash: previous_hash,
-            validation_sidelinks: validation_hashes,
+            previous_block_hash,
+            num_sidelinks,
+            validation_sidelinks,
             pow,
             timestamp: Utc::now().timestamp() as u64,
             records,
@@ -115,10 +121,15 @@ impl Block {
         self.records.push(record);
     }
 
+    pub fn add_sidelink(&mut self, hash: String) {
+        self.validation_sidelinks.push(hash);
+    }
+
     #[allow(dead_code)]
     // This function is generally wrong but stays in code as a concept to get fixed some day
-    pub fn derive_sidelink_indices_bad(&self, num_sidelinks: usize) -> Vec<usize> {
+    fn derive_sidelink_indices_bad(&self) -> Vec<usize> {
         let mut indices = Vec::new();
+        let num_sidelinks = self.num_sidelinks;
         // Derive num_sidlink indices from the previous block hash, this is deterministic
         // and will always return the same set of unique indices for the same block hash.
         let hash = self.previous_block_hash.clone();
@@ -150,29 +161,35 @@ impl Block {
         indices
     }
 
-    pub fn derive_sidelink_indices(&self, num_sidelinks: usize) -> Vec<usize> {
-        let mut candidates = (0..(self.idx - 1) as usize).collect::<Vec<usize>>();
+    pub fn derive_sidelink_indices(&self) -> Vec<u64> {
+        let num_sidelinks = self.num_sidelinks;
+        let last_possible_sl_idx = self.idx - 2;
+        // println!("num_sidelinks: {}", num_sidelinks);
+        let mut candidates = (1..=last_possible_sl_idx).collect::<Vec<u64>>();
 
+        // println!("candidates: {:?}", candidates);
         if num_sidelinks < (self.idx - 1) as usize {
             let hash = self.previous_block_hash.clone();
 
             // Perform deterministic swaps based on the previous block hash
             // The number of swaps is arbitrary
+            // TODO: fine tune the number of swaps to get more or less uniformly distributed
+            // probability that block's hash is a sidelink for every index
             let number_of_swaps = num_sidelinks * 2;
 
             for i in 0..number_of_swaps {
                 let hash_bytes1 = sha256(&format!("{}{}", hash, i).as_bytes());
                 let hash_bytes2 = sha256(&format!("{}{}{}", hash, i, i).as_bytes());
 
-                let idx1 = u64::from_be_bytes(hash_bytes1[24..].try_into().unwrap()) % (num_sidelinks as u64) as u64;
-                let idx2 = u64::from_be_bytes(hash_bytes2[24..].try_into().unwrap()) % (num_sidelinks as u64) as u64;
+                let idx1 = u64::from_be_bytes(hash_bytes1[24..].try_into().unwrap()) % (last_possible_sl_idx as u64) as u64;
+                let idx2 = u64::from_be_bytes(hash_bytes2[24..].try_into().unwrap()) % (last_possible_sl_idx as u64) as u64;
 
                 let tmp = candidates[idx1 as usize];
                 candidates[idx1 as usize] = candidates[idx2 as usize];
                 candidates[idx2 as usize] = tmp;
             }
 
-            candidates[candidates.len() - num_sidelinks - 1..].to_vec()
+            candidates[candidates.len() - num_sidelinks..].to_vec()
         } else {
             candidates
         }

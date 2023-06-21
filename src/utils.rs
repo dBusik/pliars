@@ -83,6 +83,7 @@ mod tests {
         let block = crate::blockchain::block::Block::new(
             1,
             "mDgKLzrjHxk/fpBrKby9puNvbVMVunf44ns3uj3d9UY=".to_string(),
+            0,
             Vec::new(),
             "6339200808718768504".to_string(),
             Vec::new(),

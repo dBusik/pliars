@@ -13,6 +13,7 @@ mod test {
         let block = crate::blockchain::block::Block::new(
             1,
             "mDgKLzrjHxk/fpBrKby9puNvbVMVunf44ns3uj3d9UY=".to_string(),
+            0,
             Vec::new(),
             nonce.to_string(),
             Vec::new(),
@@ -30,18 +31,19 @@ mod test {
     fn test_sidelink_deriviation() {
         use super::block::Block;
 
-        let num_sidelinks = 0;
+        let num_sidelinks = 6;
         let block = Block::new(
             10,
             "mDgKLzrjHxk/fpBrKby9puNvbVMVunf44ns3uj3d9UY=".to_string(),
+            num_sidelinks,
             Vec::new(),
             "6339200808718768504".to_string(),
             Vec::new(),
             vec![0, 0, 0, 48, 80, 236, 231, 14, 175, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         );
 
-        let sidelinks = block.derive_sidelink_indices(num_sidelinks);
-        let sidelinks_once_more = block.derive_sidelink_indices(num_sidelinks);
+        let sidelinks = block.derive_sidelink_indices();
+        let sidelinks_once_more = block.derive_sidelink_indices();
         println!("sidelinks: {:?}", sidelinks);
 
         assert_eq!(sidelinks, sidelinks_once_more);
@@ -61,6 +63,7 @@ mod test {
             {"idx":9,"previous_block_hash":"bY7SoGgUHF07oGgmZyvyX68fUIW0OWnSvaQEi7yLwTQ=","validation_sidelinks":[],"pow":"3530195229330195409","timestamp":1687109385,"records":[{"idx":[9,1],"timestamp":1687109381,"data":"papapa","author_peer_id":"12D3KooWFmb524g674gmQnuFu9CME4e6yXLgb3hpKLuagPNUhBQj"}],"difficulty":[0,0,0,63,218,110,249,240,181,42,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}    
          */
 
+// TODO: broken tests because no num_sidelnks field in the blocks below
         const SAMPLE_FILE: &str = r##"{"idx":1,"previous_block_hash":"00000000000000000000000000000000","validation_sidelinks":[],"pow":"","timestamp":0,"records":[],"difficulty":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}
 {"idx":2,"previous_block_hash":"mDgKLzrjHxk/fpBrKby9puNvbVMVunf44ns3uj3d9UY=","validation_sidelinks":[],"pow":"18358677514904226553","timestamp":1687109269,"records":[{"idx":[2,1],"timestamp":1687109265,"data":"dupa123","author_peer_id":"12D3KooWDYEAgpLJzm289WwxsB3hf9H9b7rUrepvbgXmaGa1zXsZ"}],"difficulty":[0,0,0,63,218,110,249,240,181,42,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}
 {"idx":3,"previous_block_hash":"fc+EskuYUs1uDVJI6aciGbZ2cXXIYE1n12Iljj/23HI=","validation_sidelinks":[],"pow":"7074847124089670442","timestamp":1687109279,"records":[],"difficulty":[0,0,0,63,218,110,249,240,181,42,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}
