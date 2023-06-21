@@ -122,7 +122,8 @@ fn prove_the_work(difficulty: &Vec<u8>,
 pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
     new_last_block_rx: &mut mpsc::UnboundedReceiver<Block>,
     new_record_rx: &mut mpsc::UnboundedReceiver<Record>,
-    difficulty: &Vec<u8>,
+    difficulty_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    sidelinks_rx: &mut mpsc::UnboundedReceiver<usize>,
     blockchain_filepath: &str
 ) {
     let mut last_block = if let Some(block) =
@@ -134,6 +135,16 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
         info!("[MINER]: Waiting for chain initialization...\
             (either get somebody's chain or use the init command)");
         new_last_block_rx.recv().await.unwrap()
+    };
+    let difficulty = if let Some(difficulty) = difficulty_rx.recv().await {
+        difficulty
+    } else {
+        panic!("Cannot get difficulty from channel");
+    };
+    let num_sidelinks = if let Some(num_sidelinks) = sidelinks_rx.recv().await {
+        num_sidelinks
+    } else {
+        panic!("Cannot get number of sidelinks from channel");
     };
 
     // Mining task, create a copy of the difficulty vector

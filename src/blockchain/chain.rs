@@ -5,6 +5,7 @@ use rand::Rng;
 use serde::{Serialize, Deserialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write, BufRead};
+use log::{info, warn, error};
 
 pub static mut DIFFICULTY_VALUE: Vec<u8> = Vec::new();
 pub static mut NUM_SIDELINKS: usize = 5;
@@ -18,7 +19,7 @@ pub struct Chain {
     // block. The number of hashes is defined by the network. If the idx of the block is
     // less than the number of hashes defined by the network, the block contains all the
     // hashes of the previous blocks and the rest of the hashes are empty.
-    pub num_side_links: usize,
+    pub num_sidelinks: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -116,7 +117,7 @@ impl Chain {
     pub fn new(num_side_links: usize) -> Chain {
         Chain {
             blocks: Vec::new(),
-            num_side_links,
+            num_sidelinks: num_side_links,
         }
     }
 
@@ -131,7 +132,7 @@ impl Chain {
         Ok(Chain {
             blocks,
             // TODO: determine how to store difficulty and num_side_links in the file
-            num_side_links: unsafe { NUM_SIDELINKS },
+            num_sidelinks: unsafe { NUM_SIDELINKS },
         })
     }
 
@@ -167,9 +168,131 @@ impl Chain {
             let length_reader = io::BufReader::new(file);
             Ok(length_reader.lines().count())
         } else {
-            println!("Error while opening the file: {}", file_res.err().unwrap());
+            warn!("Error while opening the file: {}", file_res.err().unwrap());
             Err("Error while opening the file".into())
         }
+    }
+
+    pub fn append_block_to_file(block: &Block,
+        file_name: &str,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut file = if let Ok(file) = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(file_name)
+        {
+            file
+        } else {
+            return Err("Error while opening the file to append the block".into());
+        };
+
+        let block_string = serde_json::to_string(block)?;
+        file.write_all(format!("{}\n", block_string).as_bytes())?;
+
+        Ok(())
+    }
+    
+    pub fn init_first_block(&mut self) {
+        self.blocks.push(Block::genesis());
+    }
+
+    pub fn add_block(&mut self, block: Block) {
+        if !self.validate_block(&block) {
+            println!("Invalid block: {:?}", block);
+            return;
+        }
+        self.blocks.push(block);
+    }
+
+    pub fn get_blocks_by_indices_from_file(indices: Vec<u64>, file_name: &str) -> Option<Vec<Block>> {
+        let file = if let Ok(file) = File::open(file_name) {
+            file
+        } else {
+            println!("[LOAD BLOCKS FROM FILE] Error while opening the file");
+            return None;
+        };
+        let reader = io::BufReader::new(file);
+
+        let mut blocks = Vec::new();
+        for (i, line) in reader.lines().enumerate() {
+            if indices.contains(&((i + 1) as u64)) {
+                if let Ok(line) = line {
+                    if let Ok(block) = serde_json::from_str(&line) {
+                        blocks.push(block);
+                    } else if let Err(e) = serde_json::from_str::<Block>(&line) {
+                        println!("[LOAD BLOCKS FROM FILE] Error while parsing the block");
+                        return None;
+                    }
+                } else {
+                    println!("[LOAD BLOCKS FROM FILE] Error while reading the file");
+                    return None;
+                }
+            }
+        }
+
+        Some(blocks)
+    }
+
+    pub fn get_last_n_blocks_from_file(n: usize, file_name: &str) -> Option<Vec<Block>> {
+        let blockchain_length =
+            if let Err(e) = Chain::get_blockchain_length(file_name) {
+                println!("Error while getting last block from file: {}", e);
+                0
+            } else {
+                Chain::get_blockchain_length(file_name).unwrap()
+            };
+        let mut last_n_blocks = None;
+
+        if blockchain_length > 0 {
+            let indices = if blockchain_length <= n {
+                // Collect all indices into the vector
+                (1..(blockchain_length as u64 + 1)).collect()
+            } else {
+                // Collect the range of indices into the vector
+                ((blockchain_length as u64 - n as u64 + 1)..(blockchain_length as u64 + 1)).collect()
+            };
+            last_n_blocks = Chain::get_blocks_by_indices_from_file(indices, file_name);
+        }
+
+        last_n_blocks
+    }
+
+    pub fn get_range_of_blocks_from_file(start_idx: u64, end_idx: u64, file_name: &str) -> Option<Vec<Block>> {
+        let blockchain_length =
+            if let Err(e) = Chain::get_blockchain_length(file_name) {
+                println!("Error while getting last block from file: {}", e);
+                0
+            } else {
+                Chain::get_blockchain_length(file_name).unwrap()
+            };
+            
+            if start_idx < 1 {
+            println!("Start index must be greater than 0");
+            return None;
+        }
+        if end_idx > blockchain_length as u64 + 1 {
+            println!("End index must be less than or equal to the length of the blockchain");
+            return None;
+        }
+        if end_idx < start_idx {
+            println!("End index must be greater than or equal to start index");
+            return None;
+        }
+        
+        let mut blocks = None;
+        if blockchain_length > 0 {
+            let indices = if end_idx > blockchain_length as u64 {
+                // Collect all indices into the vector
+                (start_idx..(blockchain_length as u64 + 1)).collect()
+            } else {
+                // Collect the range of indices into the vector
+                (start_idx..(end_idx + 1)).collect()
+            };
+            blocks = Chain::get_blocks_by_indices_from_file(indices, file_name);
+        }
+
+        blocks
     }
 
     pub fn load_block_from_file(block_idx: u64, file_name: &str) -> Option<Block> {
@@ -178,7 +301,7 @@ impl Chain {
         let file = if let Ok(file) = File::open(file_name) {
             file
         } else {
-            println!("[BLOCK VALIDATION] Error while opening the file");
+            println!("[LOAD BLOCK FROM FILE] Error while opening the file");
             return None;
         };
         let reader = io::BufReader::new(file);
@@ -190,17 +313,17 @@ impl Chain {
                     if let Ok(block) = serde_json::from_str(&line) {
                         return Some(block);
                     } else {
-                        println!("[BLOCK VALIDATION] Error while parsing the block");
+                        println!("[LOAD BLOCK FROM FILE] Error while parsing the block");
                         return None;
                     }
                 } else {
-                    println!("[BLOCK VALIDATION] Error while reading the file");
+                    println!("[LOAD BLOCK FROM FILE] Error while reading the file");
                     return None;
                 }
             }
         }
 
-        println!("[BLOCK VALIDATION] Unable to find the block with ID {}", block_idx);
+        println!("[LOAD BLOCK FROM FILE] Unable to find the block with ID {}", block_idx);
         None
     }
 
@@ -211,7 +334,7 @@ impl Chain {
     pub fn get_last_block_from_file(file_name: &str) -> Option<Block> {
         let blockchain_length =
             if let Err(e) = Chain::get_blockchain_length(file_name) {
-                println!("Error while getting last block from file: {}", e);
+                warn!("Error while getting last block from file: {}", e);
                 0
             } else {
                 Chain::get_blockchain_length(file_name).unwrap()
@@ -269,43 +392,11 @@ impl Chain {
         Ok(())
     }
 
-    pub fn append_block_to_file(block: &Block,
-        file_name: &str,
-    ) -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut file = if let Ok(file) = OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(file_name)
-        {
-            file
-        } else {
-            return Err("Error while opening the file to append the block".into());
-        };
-
-        let block_string = serde_json::to_string(block)?;
-        file.write_all(format!("{}\n", block_string).as_bytes())?;
-
-        Ok(())
-    }
-    
-    pub fn init_first_block(&mut self) {
-        self.blocks.push(Block::genesis());
-    }
-
-    pub fn add_block(&mut self, block: Block) {
-        if !self.validate_block(&block) {
-            println!("Invalid block: {:?}", block);
-            return;
-        }
-        self.blocks.push(block);
-    }
-
     pub fn choose_random_block_hashes(&self) -> Vec<String> {
-        let hashes_to_choose = if self.blocks.len() < self.num_side_links {
+        let hashes_to_choose = if self.blocks.len() < self.num_sidelinks {
             self.blocks.len()
         } else {
-            self.num_side_links
+            self.num_sidelinks
         };
         let mut rng = rand::thread_rng();
         let mut hashes = Vec::new();

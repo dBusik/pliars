@@ -21,7 +21,53 @@ use libp2p::swarm::{SwarmBuilder, SwarmEvent};
 use libp2p::{identity, Transport, noise, tcp, PeerId, yamux, gossipsub, mdns};
 use std::thread;
 use log::{error, info, warn};
-use chrono::Utc;
+
+fn parse_difficulty_and_sidelinks(user_input: &str) -> (f64, usize) {
+    let mut user_input = user_input.split_whitespace();
+    info!("user_input: {:?}", user_input);
+    let difficulty_in_secs = if let Some(difficulty) = user_input.next() {
+        info!("difficulty: {:?}", difficulty);
+        let difficulty_str = if let Some(difficulty) = difficulty.strip_prefix("d=") {
+            Some(difficulty)
+        } else {
+            None
+        };
+        if let Some(difficulty_str) = difficulty_str {
+            if let Ok(difficulty) = difficulty_str.parse::<f64>() {
+                difficulty
+            } else {
+                DEFAULT_DIFFICULTY_IN_SECONDS
+            }    
+        } else {
+            DEFAULT_DIFFICULTY_IN_SECONDS
+        }
+    } else {
+        DEFAULT_DIFFICULTY_IN_SECONDS
+    };
+
+    let num_sidelinks = if let Some(sidelinks_num) = user_input.next() {
+        info!("num_sidelinks: {:?}", sidelinks_num);
+        let sidelinks_num_str = if let Some(sidelinks_num) = sidelinks_num.strip_prefix("sl=") {
+            Some(sidelinks_num)
+        } else {
+            None
+        };
+        if let Some(sidelinks_num_str) = sidelinks_num_str {
+            if let Ok(sidelinks_num) = sidelinks_num_str.parse::<usize>() {
+                sidelinks_num
+            } else {
+                DEFAULT_NUM_OF_SIDELINKS
+            }    
+        } else {
+            DEFAULT_NUM_OF_SIDELINKS
+        }
+    } else {
+        DEFAULT_NUM_OF_SIDELINKS
+    };
+
+    info!("difficulty: {}, num_sidelinks: {}", difficulty_in_secs, num_sidelinks);
+    (difficulty_in_secs, num_sidelinks)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>>{
@@ -83,15 +129,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     // Channel to send new records to the minder thread so that they will be appended to the
     // block being mined
     let (new_record_tx, mut new_record_rx) = mpsc::unbounded_channel();
+    let (difficulty_tx, mut difficulty_rx) = mpsc::unbounded_channel();
+    let (sidelinks_tx, mut sidelinks_rx) = mpsc::unbounded_channel();
 
     // Clear the screen every 10 events
     let mut event_counter = 0;
     print_cmd_options();
-
-    // Spawn the block mining task
-    let hashrate: f64 = utils::find_my_hashrate() as f64;
-    let difficulty = utils::difficulty_from_secs(DEFAULT_DIFFICULTY_IN_SECONDS, hashrate);
-    info!("[SYSTEM] Starting the mining task with difficulty: {:?}", difficulty);
     
     // Dispatch the mine_blocks function
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -101,12 +144,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         .unwrap();
 
     let fpath_copy = blockchain_filepath.clone();
-    let difficulty_copy = difficulty.clone();
     runtime.spawn(async move {
         pow::mine_blocks(&new_mined_block_tx,
             &mut new_last_block_rx,
             &mut new_record_rx,
-            &difficulty_copy,
+            &mut difficulty_rx,
+            &mut sidelinks_rx,
             &fpath_copy).await;
     });
 
@@ -130,12 +173,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                 // If line is "init" then process the event here, otherwise use
                 // the process_cmd function
                 if line.starts_with("init") {
+                    // Possible command is init d=<difficulty in secs> sl=<number of sidelinks>
                     info!("Init received");
                     if unsafe { CHAIN_INITIALIZATION_DONE } {
                         warn!("Blockchain exists. Not initializing the blockchain");
                         // Jump out of the match and continue the loop
                         continue;
                     }
+                    // Skip the first word "init", the rest will be processed by the
+                    // parse_difficulty_and_sidelinks function
+                    let line = line.split_whitespace();
+                    // TODO: split to join?? Just pass the vector
+                    let line = line.skip(1).collect::<Vec<&str>>().join(" ");
                     // Safe alternative to the above code (not too compelling though)
                     // if std::path::Path::new(blockchain_file).exists() {
                     //     println!("Blockchain exists. Not initializing the blockchain");
@@ -143,30 +192,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     // }
 
                     let hashrate: f64 = utils::find_my_hashrate() as f64;
-                    info!("My hashrate: {}", hashrate);
+                    info!("My hashrate: {}", hashrate);    // Spawn the block mining task
 
-                    let mut user_input = line.split_whitespace();
-    
-                    // TODO: user input difficulty is ignored since the code is not ready for
-                    // dynamic difficulty adjustment
-                    // let difficulty_in_secs = if let Some(difficulty) = user_input.next() {
-                    //     let diff_val = difficulty.parse()
-                    //         .expect("can parse difficulty");
-                    //     diff_val
-                    // } else {
-                    //     DEFAULT_DIFFICULTY_IN_SECONDS
-                    // };
-
-                    let num_sidelinks = if let Some(sidelinks_num) = user_input.next() {
-                        let sidel_val = if let Ok(sidel_val) = sidelinks_num.parse::<usize>() {
-                            sidel_val
-                        } else {
-                            DEFAULT_NUM_OF_SIDELINKS
-                        };
-                        sidel_val
-                    } else {
-                        DEFAULT_NUM_OF_SIDELINKS
-                    };
+                    let (difficulty_in_secs, num_sidelinks) = parse_difficulty_and_sidelinks(&line);
+                    let difficulty = utils::difficulty_from_secs(difficulty_in_secs, hashrate);
 
                     // Difficulty should be such that number of seconds to mine a block is equal to
                     // a value given by the user or DEFAULT_DIFFICULTY_IN_SECONDS if the user did not
@@ -175,9 +204,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     // number later used for comparison with hashes as
                     //     2^256-1 / (<difficulty_in_seconds>> * <hashrate of the network>)
 
-                    // TODO: user input difficulty is ignored since the code is not ready for
-                    // dynamic difficulty adjustment                    
-                    // let difficulty = utils::difficulty_from_secs(difficulty_in_secs, hashrate);
                     let mut blockchain = Chain::new(num_sidelinks);
                     blockchain.init_first_block();
                     // blockchain.add_block(block::Block::genesis());
@@ -200,6 +226,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     }
                     // Send new last block to mining thread
                     new_last_block_tx.send(blockchain.get_last_block().unwrap().clone()).unwrap();
+                    // Send difficulty to mining thread
+                    difficulty_tx.send(difficulty).unwrap();
+                    // Send number of sidelinks to mining thread
+                    sidelinks_tx.send(num_sidelinks).unwrap();
+                    
                     NetworkEvent::InitUsingChain(blockchain).send(&mut swarm);             
                 } else if line.starts_with("rec") {
                     info!("rec received");
