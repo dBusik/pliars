@@ -226,9 +226,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
                     // Send new last block to mining thread
                     new_last_block_tx.send(blockchain.get_last_block().unwrap().clone()).unwrap();
                     // Send difficulty to mining thread
-                    difficulty_tx.send(difficulty).unwrap();
+                    // difficulty_tx.send(difficulty).unwrap();
                     // Send number of sidelinks to mining thread
-                    sidelinks_tx.send(num_sidelinks).unwrap();
+                    // sidelinks_tx.send(num_sidelinks).unwrap();
                     
                     NetworkEvent::InitUsingChain(blockchain).send(&mut swarm);             
                 } else if line.starts_with("rec") {

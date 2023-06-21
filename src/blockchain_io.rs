@@ -37,7 +37,7 @@ pub fn print_cmd_options() {
         \trec <data>                                - add record to the last block of the chain\n\
         \tprintblock  <block index>                 - display contents of a chosen block\n\
         \tnumberblocks                              - display number of blocks in the chain\n\
-        \ttalk <message>                            - send a text message to all other peers (will wave if no message is provided)\n\
+        \ttalk <message>                            - send a text message to all other peers\n\
         \tmyid                                      - print your peer id\n\
         \tmyfile                                    - print your blockchain file path\n\
         \texit                                      - exit the program"
@@ -137,8 +137,9 @@ pub fn process_simple_cmd(user_input: String,
                     Chain::get_blockchain_length(blockchain_file).unwrap(),
                     blockchain_file)
             } else {
-                Chain::get_blocks_by_indices_from_file(
-                    blocks_to_read,
+                Chain::get_blocks_by_indices_from_file_in_given_order(&
+                    &blocks_to_read,
+                    Some(blocks_to_read.clone()),
                     blockchain_file)
             };
             if let Some(file_to_write_to) = file_to_write_to {

@@ -44,7 +44,7 @@ fn prove_the_work(difficulty: &Vec<u8>,
     let mut counter = 0;
 
     let block_idx = last_block.idx + 1;
-    let num_sidelinks = if num_sidelinks >= block_idx as usize {
+    let num_sidelinks = if num_sidelinks >= (block_idx - 1) as usize {
         (block_idx - 2) as usize
     } else {
         num_sidelinks
@@ -76,6 +76,17 @@ fn prove_the_work(difficulty: &Vec<u8>,
                 // If something came through the channel, add it to the block
                 new_block.add_record(new_record);
             }
+            // TODO: try recv these two
+            // let difficulty = if let Some(difficulty) = difficulty_rx.recv().await {
+            //     difficulty
+            // } else {
+            //     panic!("Cannot get difficulty from channel");
+            // };
+            // let num_sidelinks = if let Some(num_sidelinks) = sidelinks_rx.recv().await {
+            //     num_sidelinks
+            // } else {
+            //     panic!("Cannot get number of sidelinks from channel");
+            // };
             if let Ok(new_last_block) = new_last_block_rx.try_recv() {
                 // println!("New last block received: {:?}", new_last_block);
                 // If something came through the channel, discard the current block and start
@@ -87,7 +98,7 @@ fn prove_the_work(difficulty: &Vec<u8>,
                     new_block.previous_block_hash);
 
                 new_block.idx = new_last_block.idx + 1;
-                new_block.num_sidelinks = if num_sidelinks >= new_block.idx as usize {
+                new_block.num_sidelinks = if num_sidelinks >= (new_block.idx - 1) as usize {
                     (new_block.idx - 2) as usize
                 } else {
                     num_sidelinks
@@ -150,16 +161,9 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
             (either get somebody's chain or use the init command)");
         new_last_block_rx.recv().await.unwrap()
     };
-    let difficulty = if let Some(difficulty) = difficulty_rx.recv().await {
-        difficulty
-    } else {
-        panic!("Cannot get difficulty from channel");
-    };
-    let num_sidelinks = if let Some(num_sidelinks) = sidelinks_rx.recv().await {
-        num_sidelinks
-    } else {
-        panic!("Cannot get number of sidelinks from channel");
-    };
+
+    let difficulty = last_block.difficulty.clone();
+    let num_sidelinks = last_block.num_sidelinks;
 
     // Mining task, create a copy of the difficulty vector
     let difficulty = difficulty.clone();
@@ -182,9 +186,11 @@ pub async fn mine_blocks(new_mined_block_tx: &mpsc::UnboundedSender<Block>,
             }
             _ = tokio::task::yield_now() => {
                 let sidelink_indices = mined_block.derive_sidelink_indices();
-                info!("Sidelink indices: {:?}", sidelink_indices);
-                if let Some(sidelinked_blocks) = Chain::get_blocks_by_indices_from_file(sidelink_indices,
-                    blockchain_filepath)
+                // info!("!!! Storing: sidelink indices: {:?}", sidelink_indices);
+                if let Some(sidelinked_blocks) =
+                    Chain::get_blocks_by_indices_from_file_in_given_order(&sidelink_indices,
+                        Some(sidelink_indices.clone()),
+                        blockchain_filepath)
                 {
                     sidelinked_blocks.iter().for_each(|block| {
                         // println!("Sidelinked block: {:?}", block);

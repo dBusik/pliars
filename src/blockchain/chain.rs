@@ -4,8 +4,10 @@ use openssl::base64;
 use rand::Rng;
 use serde::{Serialize, Deserialize};
 use std::fs::{File, OpenOptions};
+use std::hash::Hash;
 use std::io::{self, Write, BufRead};
 use log::{info, warn, error};
+use std::collections::HashMap;
 
 pub static mut DIFFICULTY_VALUE: Vec<u8> = Vec::new();
 pub static mut NUM_SIDELINKS: usize = 5;
@@ -205,7 +207,11 @@ impl Chain {
         self.blocks.push(block);
     }
 
-    pub fn get_blocks_by_indices_from_file(indices: Vec<u64>, file_name: &str) -> Option<Vec<Block>> {
+    // TODO: second parameter should be a flag whether we want to get blocks in the order specified
+    pub fn get_blocks_by_indices_from_file_in_given_order(indices: &Vec<u64>,
+        order: Option<Vec<u64>>,
+        file_name: &str
+    ) -> Option<Vec<Block>> {
         let file = if let Ok(file) = File::open(file_name) {
             file
         } else {
@@ -214,12 +220,30 @@ impl Chain {
         };
         let reader = io::BufReader::new(file);
 
-        let mut blocks = Vec::new();
+        // Create a map where the key is the index from indices array and the value is the
+        // value from order array
+        let order_map = if let Some(order) = order {
+            let mut map = HashMap::new();
+            for (i, &block_idx) in order.iter().enumerate() {
+                map.insert(i, block_idx);
+            }
+            Some(map)
+        } else {
+            None
+        };
+        let order_map = order_map.as_ref();
+        
+        let mut initial_order_map = HashMap::new();
+        // Vector with indices.len() elements to store the blocks in the correct order
+        let mut blocks = Vec::with_capacity(indices.len());
+        let mut block_position = 0;
         for (i, line) in reader.lines().enumerate() {
             if indices.contains(&((i + 1) as u64)) {
                 if let Ok(line) = line {
-                    if let Ok(block) = serde_json::from_str(&line) {
+                    if let Ok(block) = serde_json::from_str::<Block>(&line) {
+                        initial_order_map.insert(block.idx, block_position);
                         blocks.push(block);
+                        block_position += 1;
                     } else if let Err(e) = serde_json::from_str::<Block>(&line) {
                         println!("[LOAD BLOCKS FROM FILE] Error while parsing the block");
                         return None;
@@ -229,6 +253,21 @@ impl Chain {
                     return None;
                 }
             }
+        }
+
+        // Reorder the blocks if necessary
+        if let Some(order_map) = order_map {
+            // info!("Reordering the blocks");
+            // println!("Order of the blocsk: {:?}", order_map);
+            let mut ordered_blocks = Vec::with_capacity(indices.len());
+            for i in 0..indices.len() {
+                if let Some(&block_idx) = order_map.get(&i) {
+                    let old_block_idx = initial_order_map.get(&block_idx).unwrap();
+                    // println!("Inserting block with ID {} from position {} to position {}", block_idx, *old_block_idx, i);
+                    ordered_blocks.push(blocks[*old_block_idx].clone());
+                }
+            }
+            blocks = ordered_blocks;
         }
 
         Some(blocks)
@@ -252,7 +291,9 @@ impl Chain {
                 // Collect the range of indices into the vector
                 ((blockchain_length as u64 - n as u64 + 1)..(blockchain_length as u64 + 1)).collect()
             };
-            last_n_blocks = Chain::get_blocks_by_indices_from_file(indices, file_name);
+            last_n_blocks = Chain::get_blocks_by_indices_from_file_in_given_order(&indices, 
+                None,
+                file_name);
         }
 
         last_n_blocks
@@ -289,7 +330,9 @@ impl Chain {
                 // Collect the range of indices into the vector
                 (start_idx..(end_idx + 1)).collect()
             };
-            blocks = Chain::get_blocks_by_indices_from_file(indices, file_name);
+            blocks = Chain::get_blocks_by_indices_from_file_in_given_order(&indices, 
+                None,
+                file_name);
         }
 
         blocks
@@ -452,6 +495,7 @@ impl Chain {
         source: BlockValidationSource,
     ) -> bool
     {
+        // println!("Validating block: {:?}", block);
         // Check if the block is the genesis block
         if block.idx == 1 {
             if *block != Block::genesis() {
@@ -498,6 +542,7 @@ impl Chain {
             }
 
             let validation_sidelinks = block.derive_sidelink_indices();
+            // println!("Block index: {}, sidelinked block indices: {:?}", block.idx, validation_sidelinks);
             // Check if the number of hashes of previous blocks is correct
             if validation_sidelinks.len() != block.num_sidelinks {
                 println!("Verification of block with ID {}. \
@@ -507,16 +552,20 @@ impl Chain {
             }
 
             // Check if the hashes of previous blocks are correct
+            let mut block_order = Vec::new();
             let sidelinked_blocks = match source {
                 BlockValidationSource::File => {
-                    Chain::get_blocks_by_indices_from_file(
-                        validation_sidelinks,
+                    // println!("Querying for blocks in this order: {:?}", validation_sidelinks);
+                    Chain::get_blocks_by_indices_from_file_in_given_order(
+                        &validation_sidelinks,
+                        Some(validation_sidelinks.clone()),
                         blockchain_filepath.unwrap())
                 }
                 BlockValidationSource::Chain => {
                     let mut blocks = Vec::new();
-                    for idx in validation_sidelinks {
+                    for &idx in &validation_sidelinks {
                         if let Some(block) = chain.unwrap().blocks.get(idx as usize - 1) {
+                            block_order.push(block.idx);
                             blocks.push((*block).clone());
                         } else {
                             println!("Was unable to get the block with ID {} from the chain. \
@@ -528,13 +577,19 @@ impl Chain {
                 }
             };
 
+            // println!("Veryfying sidelinks:block order: {:?}", block_order);
             if let Some(sidelinked_blocks) = sidelinked_blocks {
                 if sidelinked_blocks.len() > 0 {
-                    for (i, block) in sidelinked_blocks.iter().enumerate() {
-                        if block.hash() != block.validation_sidelinks[i] {
+                    // println!("Sidelinked blocks: {:?}", sidelinked_blocks);
+                    for (i, sidelinked_block) in sidelinked_blocks.iter().enumerate() {
+                        // println!("Block index being verified: {}", sidelinked_block.idx);
+                        // println!("Array index being verified: {}", i);
+                        if sidelinked_block.hash() != block.validation_sidelinks[i] {
                             println!("Verification of block with ID {}. \
                                 Invalid hash of the block with ID {}",
-                                block.idx, block.idx);
+                                block.idx, sidelinked_block.idx);
+                            println!("Hash through the .hash function: {:?}\nStored: {:?}",
+                                sidelinked_block.hash(), block.validation_sidelinks[i]);
                             return false;
                         }
                     }

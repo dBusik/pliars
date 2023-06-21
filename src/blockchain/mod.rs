@@ -110,8 +110,9 @@ mod test {
             println!("file_contents: {:?}", file_contents);
 
             let blocks_to_read = vec![0, 1, 3, 8, 9, 120];
-            let blocks = Chain::get_blocks_by_indices_from_file(
-                blocks_to_read,
+            let blocks = Chain::get_blocks_by_indices_from_file_in_given_order(
+                &blocks_to_read,
+                None,
                 filename_as_str);
             
             // Won't print blocks with indicees 0 and 120 since they do not exist
